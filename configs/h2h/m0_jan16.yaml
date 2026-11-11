@@ -1,0 +1,6 @@
+# Overnight breadth window (pre-registered in docs/overnight/2026-10-26.md): 2023-01-16 to 2023-01-17. M0 ceiling -> runs/m0_jan16/.
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-01-16             # local calendar days in slice_tz, end inclusive
+end: 2023-01-17
+slice_tz: America/Chicago
+m0_dir: runs/m0_jan16         # M0 output folder for this window

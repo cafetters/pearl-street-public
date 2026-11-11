@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flexibility Benchmark</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f5f2; --surface-1: #fcfcfb; --border: #e3e1db;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7974;
+  --grid: #ebe9e4; --axis: #b9b7b0; --ref: #8d8b85;
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --good: #008300; --bad: #c43c3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211; --surface-1: #1a1a19; --border: #2e2d2b;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e88;
+    --grid: #262624; --axis: #4a4946; --ref: #8f8e88;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    --good: #3fae4a; --bad: #e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface-1: #1a1a19; --border: #2e2d2b;
+  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e88;
+  --grid: #262624; --axis: #4a4946; --ref: #8f8e88;
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+  --good: #3fae4a; --bad: #e66767;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text-primary);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
+h2 { font-size: 17px; margin: 0 0 4px; }
+.sub { color: var(--text-secondary); margin: 0 0 24px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin: 0 0 20px; }
+.note { color: var(--text-secondary); font-size: 13.5px; margin: 4px 0 12px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.tile .k { font-size: 12.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.tile .v { font-size: 28px; font-weight: 650; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.tile .d { font-size: 13px; color: var(--text-muted); }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--text-secondary); font-weight: 600; font-size: 12.5px; }
+.tablewrap { overflow-x: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--text-secondary); margin: 6px 0 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.sw.dash { background: repeating-linear-gradient(90deg, var(--ref) 0 4px, transparent 4px 7px) !important; }
+.chart { position: relative; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 12.5px; box-shadow: 0 4px 14px rgba(0,0,0,.12); display: none; min-width: 170px; }
+.tip .row { display: flex; justify-content: space-between; gap: 12px; }
+.tip .t { color: var(--text-secondary); margin-bottom: 4px; }
+ul { padding-left: 20px; margin: 6px 0; } li { margin: 4px 0; }
+.good { color: var(--good); } .bad { color: var(--bad); }
+code { font-size: 13px; background: var(--grid); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Perfect-foresight flexibility benchmark</h1>
+  <p class="sub">Engie 80-agent dataset (2023, 15-min). What is the most the 80 batteries could do if they knew every price and load in advance? This is the ceiling any agent design is measured against.</p>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card">
+    <h2>The baseline's worst day</h2>
+    <p class="note" id="daynote"></p>
+    <div class="legend" id="leg1"></div>
+    <div class="chart" id="c1"></div>
+  </div>
+
+  <div class="card">
+    <h2>Highest 500 hours of the year</h2>
+    <p class="note">Hourly system net load, sorted high to low. A flatter left edge means fewer stressful hours.</p>
+    <div class="legend" id="leg2"></div>
+    <div class="chart" id="c2"></div>
+  </div>
+
+  <div class="card">
+    <h2>All scenarios</h2>
+    <p class="note">Battery value = RT price × battery and curtailment changes, net of a $10/MWh wear cost. "Worse off" compares each agent's battery value to the dataset baseline.</p>
+    <div class="tablewrap"><table id="tbl"></table></div>
+  </div>
+
+  <div class="card" id="findings"></div>
+
+  <div class="card">
+    <h2>Method and limits</h2>
+    <ul>
+      <li><b>What changes:</b> only battery charge/discharge and PV curtailment. Load, PV output, prices and battery specs are the dataset's own.</li>
+      <li><b>Battery model</b> matches the dataset's true SOC exactly: usable capacity = rated kWh × SOH, one-way efficiency = inverter × √(round-trip), SOC 10–90 %, export capped at each agent's POI limit, ending SOC ≥ starting SOC.</li>
+      <li><b>Selfish:</b> each agent solves its own full-year LP against RT prices. <b>Peak-min:</b> one joint LP per week (with a 1-day lookahead) minimizing the system peak. <b>Co-optimized:</b> joint weekly LPs maximizing total value with system net load capped at the peak-min result + 1 %.</li>
+      <li><b>Perfect foresight</b> is an upper bound. Real forecasts will capture less. Report your agents as a share of this ceiling.</li>
+      <li><b>Prices are wholesale RT LMP</b>, not retail tariffs; there are no demand charges in the data, so "bills" here are wholesale energy value. Prices do not respond to the agents.</li>
+      <li><b>Grid constraints are ignored</b> in the LP because no line ever exceeds 93 % loading in the dataset.</li>
+      <li><b>Load flexibility not included:</b> data-center workload shifting and EV smart charging are a next step.</li>
+    </ul>
+  </div>
+</main>
+<script>
+const DATA = __DATA__;
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const S = [
+  {k: 'No batteries', c: '--ref', dash: true},
+  {k: 'Dataset baseline', c: '--series-2'},
+  {k: 'Selfish optimum', c: '--series-3'},
+  {k: 'Co-optimized', c: '--series-1'},
+];
+const fmt = (x, d=0) => x.toLocaleString('en-US', {minimumFractionDigits: d, maximumFractionDigits: d});
+const sum = Object.fromEntries(DATA.summary.map(r => [r.scenario, r]));
+const B = sum['Dataset baseline'], C = sum['Co-optimized'], P = sum['Coordinated peak-min'], SF = sum['Selfish optimum'], NB = sum['No batteries'];
+
+document.getElementById('tiles').innerHTML = [
+  ['Peak cut vs baseline', fmt(B.peak_mw - C.peak_mw) + ' MW', `${fmt(B.peak_mw)} → ${fmt(C.peak_mw)} MW (${fmt(100*(B.peak_mw-C.peak_mw)/B.peak_mw,1)}%)`],
+  ['Battery value, co-optimized', '$' + fmt(C.battery_value_net_wear_musd,1) + 'M', `vs $${fmt(B.battery_value_net_wear_musd,1)}M baseline, $${fmt(SF.battery_value_net_wear_musd,1)}M selfish`],
+  ['Cost of the peak cap', '$' + fmt((SF.battery_value_net_wear_musd - C.battery_value_net_wear_musd)*1000) + 'k', 'value given up vs every agent going selfish'],
+  ['Agents worse than baseline', fmt(C.agents_worse_than_baseline), C.agents_worse_than_baseline ? `$${fmt(C.side_payment_needed_usd)} in side payments fixes it` : 'no side payments needed'],
+].map(([k,v,d]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join('');
+
+const day = DATA.baseline_peak_day;
+document.getElementById('daynote').textContent =
+  `${day.date}: system net load by scenario (MW, local time). The baseline's battery charging builds a late-evening peak that is higher than the no-battery peak.`;
+
+function legend(id) {
+  document.getElementById(id).innerHTML = S.map(s =>
+    `<span><i class="sw${s.dash ? ' dash' : ''}" style="background:var(${s.c})"></i>${s.k}</span>`).join('');
+}
+function lineChart(id, xs, seriesMap, opts) {
+  const el = document.getElementById(id);
+  const W = Math.max(300, el.clientWidth || 900), H = W < 600 ? 260 : 340, m = {l: 48, r: 10, t: 10, b: 34};
+  const all = S.flatMap(s => seriesMap[s.k]);
+  let lo = Math.min(...all), hi = Math.max(...all); const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
+  const step = Math.pow(10, Math.floor(Math.log10((hi - lo) / 4)));
+  const st = [1,2,2.5,5,10].map(f => f*step).find(s => (hi-lo)/s <= 6);
+  lo = Math.floor(lo/st)*st; hi = Math.ceil(hi/st)*st;
+  const x0 = xs[0], x1 = xs[xs.length-1];
+  const X = v => m.l + (v - x0) / (x1 - x0) * (W - m.l - m.r);
+  const Y = v => H - m.b - (v - lo) / (hi - lo) * (H - m.t - m.b);
+  let g = '';
+  for (let v = lo; v <= hi + 1e-9; v += st) g += `<line x1="${m.l}" x2="${W-m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${css('--grid')}"/><text x="${m.l-8}" y="${Y(v)+4}" text-anchor="end" font-size="11.5" fill="${css('--text-muted')}">${fmt(v)}</text>`;
+  (W < 600 ? opts.xticks.filter((_, i) => i % 2 === 0) : opts.xticks).forEach(v => g += `<text x="${X(v)}" y="${H-m.b+18}" text-anchor="middle" font-size="11.5" fill="${css('--text-muted')}">${opts.xfmt(v)}</text>`);
+  g += `<line x1="${m.l}" x2="${W-m.r}" y1="${H-m.b}" y2="${H-m.b}" stroke="${css('--axis')}"/>`;
+  g += `<text x="${m.l}" y="${H-2}" font-size="11.5" fill="${css('--text-muted')}">${opts.xlabel}</text>`;
+  S.forEach(s => {
+    const d = seriesMap[s.k].map((v,i) => `${i?'L':'M'}${X(xs[i]).toFixed(1)},${Y(v).toFixed(1)}`).join('');
+    g += `<path d="${d}" fill="none" stroke="${css(s.c)}" stroke-width="2" ${s.dash?'stroke-dasharray="5 4"':''} stroke-linejoin="round"/>`;
+  });
+  g += `<line id="${id}x" y1="${m.t}" y2="${H-m.b}" stroke="${css('--axis')}" visibility="hidden"/>`;
+  S.forEach((s,i) => g += `<circle id="${id}d${i}" r="4" fill="${css(s.c)}" stroke="${css('--surface-1')}" stroke-width="2" visibility="hidden"/>`);
+  g += `<rect x="${m.l}" y="${m.t}" width="${W-m.l-m.r}" height="${H-m.t-m.b}" fill="transparent" id="${id}hit"/>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${opts.aria}">${g}</svg><div class="tip"></div>`;
+  const svg = el.querySelector('svg'), tip = el.querySelector('.tip'), hit = el.querySelector(`#${id}hit`);
+  const move = e => {
+    const r = svg.getBoundingClientRect(); const px = (e.clientX - r.left) / r.width * W;
+    let i = 0, best = 1e9; xs.forEach((v,j) => { const dd = Math.abs(X(v)-px); if (dd < best) { best = dd; i = j; } });
+    const xl = el.querySelector(`#${id}x`); xl.setAttribute('x1', X(xs[i])); xl.setAttribute('x2', X(xs[i])); xl.setAttribute('visibility','visible');
+    S.forEach((s,k) => { const c = el.querySelector(`#${id}d${k}`); c.setAttribute('cx', X(xs[i])); c.setAttribute('cy', Y(seriesMap[s.k][i])); c.setAttribute('visibility','visible'); });
+    tip.innerHTML = `<div class="t">${opts.tipx(xs[i], i)}</div>` + S.map(s => `<div class="row"><span><i class="sw${s.dash?' dash':''}" style="background:var(${s.c})"></i> ${s.k}</span><b>${fmt(seriesMap[s.k][i])}</b></div>`).join('');
+    tip.style.display = 'block';
+    const cw = el.clientWidth, tx = (X(xs[i]) / W) * cw;
+    tip.style.left = (tx + 190 > cw ? tx - 200 : tx + 12) + 'px'; tip.style.top = '10px';
+  };
+  hit.addEventListener('pointermove', move);
+  hit.addEventListener('pointerleave', () => { tip.style.display = 'none'; el.querySelectorAll('[id^="'+id+'d"],#'+id+'x').forEach(n => n.setAttribute('visibility','hidden')); });
+}
+function render() {
+  legend('leg1'); legend('leg2');
+  lineChart('c1', day.hours, day.series, {xticks: [0,3,6,9,12,15,18,21,23.75], xfmt: v => v===23.75 ? '24' : String(v).padStart(2,'0'), xlabel: 'Hour (Central)',
+    tipx: (v,i) => `${String(Math.floor(v)).padStart(2,'0')}:${String(Math.round((v%1)*60)).padStart(2,'0')} · RT $${fmt(day.price[i],0)}/MWh`, aria: 'Net load on peak day by scenario'});
+  const n = DATA.duration['Dataset baseline'].length; const xs = Array.from({length: n}, (_, i) => i + 1);
+  lineChart('c2', xs, DATA.duration, {xticks: [1,100,200,300,400,500], xfmt: v => fmt(v), xlabel: 'Rank (hours)', tipx: v => `Hour rank ${v}`, aria: 'Load duration curve top 500 hours'});
+}
+render();
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 150); });
+
+const cols = [['Scenario','scenario'],['Peak MW','peak_mw',0],['Top-100 avg MW','top100_mean_mw',0],['Hours > 2,500 MW','hours_above_2500',0],['Battery value $M','battery_value_net_wear_musd',2],['Cycles / yr','avg_cycles_per_yr',0],['Worse off','agents_worse_than_baseline',0]];
+document.getElementById('tbl').innerHTML = '<tr>' + cols.map(c => `<th>${c[0]}</th>`).join('') + '</tr>' +
+  DATA.summary.map(r => '<tr>' + cols.map(c => `<td>${(c[1]==='agents_worse_than_baseline' && r.scenario==='No batteries') ? '–' : typeof r[c[1]] === 'number' ? fmt(r[c[1]], c[2]) : r[c[1]]}</td>`).join('') + '</tr>').join('');
+document.getElementById('findings').innerHTML = `__FINDINGS__`;
+</script>
+</body>
+</html>

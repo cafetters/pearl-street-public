@@ -1,0 +1,33 @@
+# Price-mode prototype v2 (bench/price_mode_proto.py). Writes *_v2 files in runs/price_proto/; v1's files stay.
+run_name: price_proto_v2
+out_tag: v2
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-01-02             # local calendar days in slice_tz, end inclusive (D19)
+end: 2023-01-03
+slice_tz: America/Chicago
+seed: 1                       # unused (no randomness), recorded in the header
+m0_expect_mw:                 # runs/m0/ceiling.json on main; the in-process M0 must reproduce these to 0.1 MW
+  recorded: 2745.54
+  ceiling: 2436.80
+headroom_mw: [100, 150]       # target = selfish Central-day peak - headroom (agents/operator.py convention)
+# 1. v1's two best oracle settings, extended to max_rounds
+oracle_pairs: [[100, 1], [150, 0.1]]   # [headroom MW, rho multiple of rho_mid]
+rho_mults: []
+theta: 0.2                    # oracle price step: alpha = theta x max central dual / selfish max excess (as v1)
+no_oracle_price_from: configs/m2a.yaml
+no_oracle_headroom_mw: []
+# 2. oracle-free: rho0 = mean daily DA spread x K / median registered power; alpha = rho / N; residual balancing
+free_headroom_mw: [100, 150]
+rb_mu: 10                     # Boyd et al. 2011, sec. 3.4.1 defaults
+rb_tau: 2
+rb_bounds_factor: 1000        # rho stays within rho0 / 1000 .. rho0 x 1000
+max_rounds: 400
+within_mw: [1, 5]             # report first and settled rounds with max excess over target within these
+plot_log: true
+prox_deadzone_usd_mwh: 0.05   # PWL prox: largest kink slope at zero change (first secant), $/MWh
+tol_excess_mw: 1.0            # converged: max excess over target <= this
+tol_move_mw: 1.0              #   and max |change in aggregate| between rounds <= this
+tol_slack_mw: 5.0             #   and no step priced while more than this below target
+streak: 3                     #   for this many rounds in a row
+harm_rel: 0.01                # section 8 tolerance: max(1% of |selfish value|, $10)
+harm_abs_usd: 10.0

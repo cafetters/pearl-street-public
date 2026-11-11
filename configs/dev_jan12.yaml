@@ -1,0 +1,6 @@
+# Second window for the head-to-head (D49): Jan 12-13, 2023. M0 ceiling -> runs/m0_jan12/.
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-01-12             # local calendar days in slice_tz, end inclusive
+end: 2023-01-13
+slice_tz: America/Chicago     # -> 2023-01-12 06:00 UTC to 2023-01-14 05:45 UTC; stored timestamps stay UTC
+m0_dir: runs/m0_jan12         # M0 output folder for this window

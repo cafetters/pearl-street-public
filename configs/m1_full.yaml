@@ -1,0 +1,23 @@
+# M1 pass test: all 80 batteries as code-only agents.
+run_name: m1
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-01-02             # local calendar days in slice_tz, end inclusive (D19)
+end: 2023-01-03
+slice_tz: America/Chicago
+agents: all
+zone: SYS                     # one zone, the whole system, until the stressed grid (D9, D10)
+operator_id: GRID_OP
+metering_id: metering
+clock_id: clock
+headroom_mw: [100, 150, 200, 250]            # target = forecast day peak - headroom
+layer_mw: 25
+price_cap_usd_mwh: 500        # placeholder until Q-N1 (avoided cost)
+post_hour_local: 9            # day D's needs posted 09:00 on D-1
+gate_lead_h: 1
+price_publish_hour_local: 12  # day-ahead prices for D published 12:00 on D-1
+forecast_noise_sigma: 0.0
+seed: 1
+min_offer_kw: 50
+wear_usd_mwh: 10              # same as bench.py DEG
+nominations: false            # M1: no nominations (M1.1 turns them on, D32)
+rounds: 1

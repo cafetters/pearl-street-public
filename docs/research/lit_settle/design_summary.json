@@ -1,0 +1,90 @@
+{
+ "header": {
+  "script": "bench/lit_settle.py",
+  "config": {
+   "set": "design",
+   "repo": ".",
+   "holdout": "../pearl-street-holdout"
+  },
+  "seed": null,
+  "git_commit": "0098cf0c26bc2bd6e141cf152ce42272c76764ea",
+  "run_at_utc": "2026-11-06T06:11:57+00:00",
+  "tool_sha256_16": "b0c1dc181e7862c3"
+ },
+ "set": "design",
+ "windows": 23,
+ "rc": 0,
+ "totals": {
+  "today": {
+   "operator_payout_usd": 96173.11418954423,
+   "settlement_harmed": 83,
+   "settlement_harm_usd": 2969.50795314718,
+   "harmed": 117,
+   "harm_usd": 21241.754065332112,
+   "windows_with_settlement_harm": [
+    "jan06 (42, $1,698.70)",
+    "nov14 (15, $504.86)",
+    "dec07 (26, $765.95)"
+   ]
+  },
+  "ri": {
+   "operator_payout_usd": 120397.00184874826,
+   "settlement_harmed": 33,
+   "settlement_harm_usd": 1130.2778304762414,
+   "harmed": 106,
+   "harm_usd": 19120.15478819259,
+   "windows_with_settlement_harm": [
+    "jan12 (3, $72.26)",
+    "may29 (1, $29.65)",
+    "feb02 (28, $961.83)",
+    "mar08 (1, $66.54)"
+   ]
+  },
+  "frozen": {
+   "operator_payout_usd": 199730.80453590417,
+   "settlement_harmed": 107,
+   "settlement_harm_usd": 7661.3984654029355,
+   "harmed": 164,
+   "harm_usd": 22914.669832667827,
+   "windows_with_settlement_harm": [
+    "jan06 (2, $68.36)",
+    "may29 (22, $829.44)",
+    "feb02 (50, $5,472.55)",
+    "apr16 (33, $1,291.06)"
+   ]
+  },
+  "max": {
+   "operator_payout_usd": 116787.71796862941,
+   "settlement_harmed": 0,
+   "settlement_harm_usd": 0.0,
+   "harmed": 106,
+   "harm_usd": 20075.368793672107,
+   "windows_with_settlement_harm": []
+  },
+  "sthlmflex": {
+   "operator_payout_usd": 96173.12166348624,
+   "settlement_harmed": 83,
+   "settlement_harm_usd": 2969.5078231324283,
+   "harmed": 117,
+   "harm_usd": 21241.753535536034,
+   "windows_with_settlement_harm": [
+    "jan06 (42, $1,698.70)",
+    "nov14 (15, $504.86)",
+    "dec07 (26, $765.95)"
+   ]
+  },
+  "intraflex": {
+   "operator_payout_usd": 96173.12166348624,
+   "settlement_harmed": 83,
+   "settlement_harm_usd": 2969.5078231324283,
+   "harmed": 117,
+   "harm_usd": 21241.753535536034,
+   "windows_with_settlement_harm": [
+    "jan06 (42, $1,698.70)",
+    "nov14 (15, $504.86)",
+    "dec07 (26, $765.95)"
+   ]
+  }
+ },
+ "label": "offline, behavior held fixed (synthetic data)"
+}

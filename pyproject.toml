@@ -1,0 +1,23 @@
+[project]
+name = "flex-exchange"
+version = "0.1.0"
+description = "Flexibility exchange simulation on Engie data"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy<2.5",              # pandapower 3.5 needs numpy below 2.5
+    "pandas>=2.3,<2.4",       # pandapower 3.5 does not support pandas 3
+    "pandapower>=3.5,<3.6",
+    "pyarrow",
+    "scipy",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["exchange", "exchange.trace", "sim", "agents", "attacks", "bench"]

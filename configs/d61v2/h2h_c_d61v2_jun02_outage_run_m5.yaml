@@ -1,0 +1,51 @@
+# D61 v2 (docs/plans/d61v2_attacks_check.md). Copy of configs/d58m/h2h_c_sep05_h100_m0.yaml without comments, with only run_name, start, end, m0_dir, delivery_record, silent_reference, declared_reference, d62_guarantee, nomination_span, peak_steps, peak_response_margin_usd_mwh, attackers set.
+run_name: h2h_c_d61v2_jun02_outage_run_m5
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-06-02
+end: 2023-06-03
+slice_tz: America/Chicago
+agents: all
+zone: SYS                     # one zone, the whole system, until the stressed grid (D9, D10)
+operator_id: GRID_OP
+metering_id: metering
+clock_id: clock
+headroom_mw: [100]   # target = forecast day peak - headroom
+layer_mw: 25
+price_cap_usd_mwh: 500        # placeholder until Q-N1 (avoided cost)
+post_hour_local: 9            # day D's needs posted 09:00 on D-1
+gate_lead_h: 1
+price_publish_hour_local: 12  # day-ahead prices for D published 12:00 on D-1
+forecast_noise_sigma: 0.0
+seed: 1
+min_offer_kw: 50
+wear_usd_mwh: 10              # same as bench.py DEG
+nominations: true             # agents publish planned site net; operator sees only the zone total
+rounds: info                  # by information: residual rounds until one closes after price-informed nominations (D32)
+nomination_lead_h: 1          # nomination deadline, after the previous round's gate
+imbalance_band_pct: 0.05      # free band: max(5% of battery power, 50 kW) per step
+imbalance_band_min_kw: 50     # deviation beyond it pays the zone scarcity price (price_cap, placeholder)
+compare_to: none   # no side-by-side (other windows have no M1.1 run)
+release_superseded_lock: true  # an announced binding call releases the earlier lock for its steps (D46)
+plan_to_nomination: true       # plan to the nomination exactly; the band is for forecast error (D48)
+price_mode: true               # D53
+price_rounds_per_gate: 30      # pre-registered by timing: 30 if a full run projects under 30 min, else 20
+price_rounds_basis: "timing check Oct 26 (runs/h2h_c_timing, 80 agents, 2 rounds per gate): 11.6 s per round, about 33 s otherwise; worst case 4 gates x 30 rounds projects about 24 min, under 30, so 30"
+peak_price_cap_usd_mwh: 100
+price_rb_mu: 10                # residual balancing (Boyd et al. 2011, sec. 3.4.1), as prototype v3
+price_rb_tau: 2
+price_rho_floor: 1000          # rho within rho0 / 1000 ...
+price_rho_cap: 10              # ... and 10 x rho0
+price_tol_excess_mw: 1.0       # a gate converges at max excess <= 1 MW ...
+price_tol_dual_usd_mwh: 6.0    # ... and dual residual <= 6 $/MWh ...
+price_streak: 3                # ... for 3 rounds in a row
+prox_deadzone_usd_mwh: 0.05    # secant prox: largest kink slope at zero change
+m0_dir: runs/m0_jun02
+settlement_reference: selfish_1p
+peak_response_margin_usd_mwh: 5.0
+delivery_record: true
+silent_reference: true
+declared_reference: true
+d62_guarantee: false
+nomination_span: operating_day
+peak_steps: controllable
+attackers: [{agent: DC_08, type: outage, mode: run, day: '2023-06-02'}]

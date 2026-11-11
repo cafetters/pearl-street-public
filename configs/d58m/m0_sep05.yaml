@@ -1,0 +1,6 @@
+# D58 margin test fresh window (2023-09-05, breadth rule): M0 ceiling -> runs/m0_sep05/.
+data_dir: ../data
+start: 2023-09-05
+end: 2023-09-06
+slice_tz: America/Chicago
+m0_dir: runs/m0_sep05

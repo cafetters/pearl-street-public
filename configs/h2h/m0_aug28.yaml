@@ -1,0 +1,6 @@
+# Daytime J breadth window (pre-registered in docs/overnight/2026-10-26.md): 2023-08-28 to 2023-08-29. M0 ceiling -> runs/m0_aug28/.
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-08-28             # local calendar days in slice_tz, end inclusive
+end: 2023-08-29
+slice_tz: America/Chicago
+m0_dir: runs/m0_aug28         # M0 output folder for this window

@@ -1,0 +1,70 @@
+{
+ "header": {
+  "script": "bench/lit_settle.py",
+  "config": {
+   "set": "holdout",
+   "repo": ".",
+   "holdout": "../pearl-street-holdout"
+  },
+  "seed": null,
+  "git_commit": "0098cf0c26bc2bd6e141cf152ce42272c76764ea",
+  "run_at_utc": "2026-11-06T06:12:47+00:00",
+  "tool_sha256_16": "b0c1dc181e7862c3"
+ },
+ "set": "holdout",
+ "windows": 24,
+ "rc": 0,
+ "totals": {
+  "today": {
+   "operator_payout_usd": 129550.5566075722,
+   "settlement_harmed": 53,
+   "settlement_harm_usd": 1951.8146833043022,
+   "harmed": 221,
+   "harm_usd": 25902.216913108827,
+   "windows_with_settlement_harm": [
+    "feb08 (4, $74.32)",
+    "nov26 (1, $12.11)",
+    "nov11 (47, $1,854.22)",
+    "dec09 (1, $11.17)"
+   ]
+  },
+  "ri": {
+   "operator_payout_usd": 136894.1048410983,
+   "settlement_harmed": 61,
+   "settlement_harm_usd": 2279.175957766064,
+   "harmed": 229,
+   "harm_usd": 29022.176601652918,
+   "windows_with_settlement_harm": [
+    "jan04 (2, $55.63)",
+    "apr08 (5, $406.33)",
+    "nov26 (18, $901.95)",
+    "nov11 (2, $21.81)",
+    "dec09 (34, $893.46)"
+   ]
+  },
+  "frozen": {
+   "operator_payout_usd": 182725.7191157723,
+   "settlement_harmed": 100,
+   "settlement_harm_usd": 3933.160522929009,
+   "harmed": 258,
+   "harm_usd": 31706.80788966977,
+   "windows_with_settlement_harm": [
+    "jan04 (4, $160.89)",
+    "mar12 (26, $1,160.89)",
+    "nov11 (23, $575.43)",
+    "dec09 (47, $2,035.95)"
+   ]
+  },
+  "max": {
+   "operator_payout_usd": 145860.91832154387,
+   "settlement_harmed": 1,
+   "settlement_harm_usd": 11.140763763352595,
+   "harmed": 208,
+   "harm_usd": 24606.95279702476,
+   "windows_with_settlement_harm": [
+    "dec09 (1, $11.14)"
+   ]
+  }
+ },
+ "label": "offline, behavior held fixed (synthetic data)"
+}

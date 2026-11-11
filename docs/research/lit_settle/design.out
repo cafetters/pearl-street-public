@@ -1,0 +1,95 @@
+jan12: today $6,970 sh 0/$0 | ri $5,996 sh 3/$72 | frozen $11,629 sh 0/$0 | max $7,418 sh 0/$0 | sthlmflex $6,970 sh 0/$0 | intraflex $6,970 sh 0/$0
+nov28: today $5,915 sh 0/$0 | ri $7,659 sh 0/$0 | frozen $5,408 sh 0/$0 | max $5,977 sh 0/$0 | sthlmflex $5,915 sh 0/$0 | intraflex $5,915 sh 0/$0
+jan02: today $4,155 sh 0/$0 | ri $3,614 sh 0/$0 | frozen $4,515 sh 0/$0 | max $4,176 sh 0/$0 | sthlmflex $4,155 sh 0/$0 | intraflex $4,155 sh 0/$0
+jan16: today $4,726 sh 0/$0 | ri $7,211 sh 0/$0 | frozen $31,693 sh 0/$0 | max $5,528 sh 0/$0 | sthlmflex $4,726 sh 0/$0 | intraflex $4,726 sh 0/$0
+jan31: today $5,803 sh 0/$0 | ri $7,975 sh 0/$0 | frozen $7,169 sh 0/$0 | max $7,935 sh 0/$0 | sthlmflex $5,803 sh 0/$0 | intraflex $5,803 sh 0/$0
+feb12: today $5,223 sh 0/$0 | ri $5,872 sh 0/$0 | frozen $5,850 sh 0/$0 | max $6,488 sh 0/$0 | sthlmflex $5,223 sh 0/$0 | intraflex $5,223 sh 0/$0
+jun19: today $3,025 sh 0/$0 | ri $2,722 sh 0/$0 | frozen $2,722 sh 0/$0 | max $3,026 sh 0/$0 | sthlmflex $3,025 sh 0/$0 | intraflex $3,025 sh 0/$0
+sep21: today $838 sh 0/$0 | ri $763 sh 0/$0 | frozen $763 sh 0/$0 | max $981 sh 0/$0 | sthlmflex $838 sh 0/$0 | intraflex $838 sh 0/$0
+jul01: today $2,976 sh 0/$0 | ri $4,061 sh 0/$0 | frozen $4,061 sh 0/$0 | max $3,664 sh 0/$0 | sthlmflex $2,976 sh 0/$0 | intraflex $2,976 sh 0/$0
+aug28: today $739 sh 0/$0 | ri $756 sh 0/$0 | frozen $756 sh 0/$0 | max $965 sh 0/$0 | sthlmflex $739 sh 0/$0 | intraflex $739 sh 0/$0
+jul14: today $1,964 sh 0/$0 | ri $3,237 sh 0/$0 | frozen $3,237 sh 0/$0 | max $2,990 sh 0/$0 | sthlmflex $1,964 sh 0/$0 | intraflex $1,964 sh 0/$0
+jan06: today $5,206 sh 42/$1,699 | ri $12,205 sh 0/$0 | frozen $7,819 sh 2/$68 | max $10,389 sh 0/$0 | sthlmflex $5,206 sh 42/$1,699 | intraflex $5,206 sh 42/$1,699
+jun29: today $8,608 sh 0/$0 | ri $7,372 sh 0/$0 | frozen $6,654 sh 0/$0 | max $8,775 sh 0/$0 | sthlmflex $8,608 sh 0/$0 | intraflex $8,608 sh 0/$0
+jul05: today $2,725 sh 0/$0 | ri $4,097 sh 0/$0 | frozen $4,097 sh 0/$0 | max $3,728 sh 0/$0 | sthlmflex $2,725 sh 0/$0 | intraflex $2,725 sh 0/$0
+nov14: today $7,049 sh 15/$505 | ri $15,325 sh 0/$0 | frozen $15,176 sh 0/$0 | max $10,431 sh 0/$0 | sthlmflex $7,049 sh 15/$505 | intraflex $7,049 sh 15/$505
+may29: today $2,613 sh 0/$0 | ri $1,449 sh 1/$30 | frozen $138 sh 22/$829 | max $2,617 sh 0/$0 | sthlmflex $2,613 sh 0/$0 | intraflex $2,613 sh 0/$0
+feb02: today $7,273 sh 0/$0 | ri $5,194 sh 28/$962 | frozen $-592 sh 50/$5,473 | max $7,700 sh 0/$0 | sthlmflex $7,273 sh 0/$0 | intraflex $7,273 sh 0/$0
+sep18: today $639 sh 0/$0 | ri $347 sh 0/$0 | frozen $268 sh 0/$0 | max $642 sh 0/$0 | sthlmflex $639 sh 0/$0 | intraflex $639 sh 0/$0
+aug26: today $729 sh 0/$0 | ri $1,048 sh 0/$0 | frozen $1,048 sh 0/$0 | max $990 sh 0/$0 | sthlmflex $729 sh 0/$0 | intraflex $729 sh 0/$0
+oct04: today $1,779 sh 0/$0 | ri $4,136 sh 0/$0 | frozen $4,136 sh 0/$0 | max $3,885 sh 0/$0 | sthlmflex $1,779 sh 0/$0 | intraflex $1,779 sh 0/$0
+dec07: today $2,037 sh 26/$766 | ri $3,882 sh 0/$0 | frozen $50,547 sh 0/$0 | max $2,971 sh 0/$0 | sthlmflex $2,037 sh 26/$766 | intraflex $2,037 sh 26/$766
+mar08: today $3,586 sh 0/$0 | ri $5,638 sh 1/$67 | frozen $28,067 sh 0/$0 | max $3,623 sh 0/$0 | sthlmflex $3,586 sh 0/$0 | intraflex $3,586 sh 0/$0
+apr16: today $11,593 sh 0/$0 | ri $9,839 sh 0/$0 | frozen $4,569 sh 33/$1,291 | max $11,889 sh 0/$0 | sthlmflex $11,593 sh 0/$0 | intraflex $11,593 sh 0/$0
+{
+ "today": {
+  "operator_payout_usd": 96173.11,
+  "settlement_harmed": 83,
+  "settlement_harm_usd": 2969.51,
+  "harmed": 117,
+  "harm_usd": 21241.75,
+  "windows_with_settlement_harm": [
+   "jan06 (42, $1,698.70)",
+   "nov14 (15, $504.86)",
+   "dec07 (26, $765.95)"
+  ]
+ },
+ "ri": {
+  "operator_payout_usd": 120397.0,
+  "settlement_harmed": 33,
+  "settlement_harm_usd": 1130.28,
+  "harmed": 106,
+  "harm_usd": 19120.15,
+  "windows_with_settlement_harm": [
+   "jan12 (3, $72.26)",
+   "may29 (1, $29.65)",
+   "feb02 (28, $961.83)",
+   "mar08 (1, $66.54)"
+  ]
+ },
+ "frozen": {
+  "operator_payout_usd": 199730.8,
+  "settlement_harmed": 107,
+  "settlement_harm_usd": 7661.4,
+  "harmed": 164,
+  "harm_usd": 22914.67,
+  "windows_with_settlement_harm": [
+   "jan06 (2, $68.36)",
+   "may29 (22, $829.44)",
+   "feb02 (50, $5,472.55)",
+   "apr16 (33, $1,291.06)"
+  ]
+ },
+ "max": {
+  "operator_payout_usd": 116787.72,
+  "settlement_harmed": 0,
+  "settlement_harm_usd": 0.0,
+  "harmed": 106,
+  "harm_usd": 20075.37,
+  "windows_with_settlement_harm": []
+ },
+ "sthlmflex": {
+  "operator_payout_usd": 96173.12,
+  "settlement_harmed": 83,
+  "settlement_harm_usd": 2969.51,
+  "harmed": 117,
+  "harm_usd": 21241.75,
+  "windows_with_settlement_harm": [
+   "jan06 (42, $1,698.70)",
+   "nov14 (15, $504.86)",
+   "dec07 (26, $765.95)"
+  ]
+ },
+ "intraflex": {
+  "operator_payout_usd": 96173.12,
+  "settlement_harmed": 83,
+  "settlement_harm_usd": 2969.51,
+  "harmed": 117,
+  "harm_usd": 21241.75,
+  "windows_with_settlement_harm": [
+   "jan06 (42, $1,698.70)",
+   "nov14 (15, $504.86)",
+   "dec07 (26, $765.95)"
+  ]
+ }
+}

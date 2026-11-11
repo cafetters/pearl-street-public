@@ -1,0 +1,6 @@
+# D61 v2 (docs/plans/d61v2_attacks_check.md): M0 ceiling for 2023-12-11 to 2023-12-12 -> runs/m0_dec11/.
+data_dir: ../data
+start: 2023-12-11
+end: 2023-12-12
+slice_tz: America/Chicago
+m0_dir: runs/m0_dec11

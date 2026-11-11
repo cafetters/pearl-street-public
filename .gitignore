@@ -1,0 +1,28 @@
+# Run outputs (keep curated samples)
+runs/*
+!runs/samples/
+!runs/samples/**
+
+# Secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Data files - Engie data lives in ../data, never in this repo
+*.parquet
+
+# PDFs (incl. course slides)
+*.pdf
+*.PDF
+
+# Arrays/metadata extracted from Engie data by bench/prep.py
+*.npz
+bench/meta.csv
+
+# Course slides and PDFs never go in the repo (CLAUDE.md)
+docs/hw7/

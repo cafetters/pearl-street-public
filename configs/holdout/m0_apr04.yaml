@@ -1,0 +1,6 @@
+# Holdout max-rule check (pre-registered, docs/plans/max_rule_holdout_check.md): M0 ceiling for 2023-04-04 to 2023-04-05 -> runs/m0_apr04/.
+data_dir: ../data
+start: 2023-04-04
+end: 2023-04-05
+slice_tz: America/Chicago
+m0_dir: runs/m0_apr04

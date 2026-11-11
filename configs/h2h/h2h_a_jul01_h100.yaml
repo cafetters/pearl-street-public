@@ -1,0 +1,45 @@
+# Overnight breadth (pre-registered in docs/overnight/2026-10-26.md); supplementary to D53.
+# Head-to-head (D49), arm A (F1+F3), 2023-07-01 to 2023-07-02, 100 MW. Pre-registered: no tuning between runs.
+run_name: h2h_a_jul01_h100
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-07-01
+end: 2023-07-02
+slice_tz: America/Chicago
+agents: all
+zone: SYS                     # one zone, the whole system, until the stressed grid (D9, D10)
+operator_id: GRID_OP
+metering_id: metering
+clock_id: clock
+headroom_mw: [100]   # target = forecast day peak - headroom
+layer_mw: 25
+price_cap_usd_mwh: 500        # placeholder until Q-N1 (avoided cost)
+post_hour_local: 9            # day D's needs posted 09:00 on D-1
+gate_lead_h: 1
+price_publish_hour_local: 12  # day-ahead prices for D published 12:00 on D-1
+forecast_noise_sigma: 0.0
+seed: 1
+min_offer_kw: 50
+wear_usd_mwh: 10              # same as bench.py DEG
+nominations: true             # agents publish planned site net; operator sees only the zone total
+rounds: info                  # by information: residual rounds until one closes after price-informed nominations (D32)
+nomination_lead_h: 1          # nomination deadline, after the previous round's gate
+imbalance_band_pct: 0.05      # free band: max(5% of battery power, 50 kW) per step
+imbalance_band_min_kw: 50     # deviation beyond it pays the zone scarcity price (price_cap, placeholder)
+compare_to: none   # no side-by-side (other windows have no M1.1 run)
+# M2a (D34 revised, D37)
+firm_offers: true              # size offers from energy reachable by the window, prep starting at the gate
+prep_clearing: true            # offers declare prep; it clears only if the zone stays at or below target
+partial_prep: true             # if prep doesn't fit, accept the largest part whose pro-rata prep does (D41)
+no_rebound: true               # awarded load capped at pre-award nomination + awarded prep (D34)
+rebound_priority: grid         # grid: miss an award rather than break the cap; delivery: the reverse
+rebound_hours: 24              # cap and prep run to each window end + 24 h
+daily_energy: true             # offers + awards per local day within usable storage + conservative PV
+pv_conservative_factor: 0.5
+risk_premium_usd_mwh: auto     # mean |RT - DA| over the slice (in-sample); 0 turns it off
+sequential_clearing: true      # needs sharing a gate clear one at a time in operator priority order (D42)
+referee: abort                 # abort: stop the run on an undeliverable award; collect: log every one and continue
+release_superseded_lock: true  # an announced binding call releases the earlier lock for its steps (D46)
+cap_rebase: false              # D47 not adopted (kept behind this flag): re-base clips refills after the lock
+plan_to_nomination: true       # plan to the nomination and cap exactly; the band is for forecast error (D48)
+publish_room: false   # D50: publish per-step zone room (arm B)
+m0_dir: runs/m0_jul01   # this window's M0 ceiling

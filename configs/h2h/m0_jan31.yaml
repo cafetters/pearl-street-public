@@ -1,0 +1,6 @@
+# D56 confirmation test fresh window (breadth rule, docs/plans/d56_settlement_report.md): 2023-01-31 to 2023-02-01. M0 ceiling -> runs/m0_jan31/.
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-01-31             # local calendar days in slice_tz, end inclusive
+end: 2023-02-01
+slice_tz: America/Chicago
+m0_dir: runs/m0_jan31         # M0 output folder for this window

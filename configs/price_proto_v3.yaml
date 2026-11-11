@@ -1,0 +1,40 @@
+# Price-mode prototype v3 (bench/price_mode_proto.py). Writes *_v3 files in runs/price_proto/; v1 and v2 files stay.
+# Changes from v2: fixed residual balancing (scaled dual residual, rho cap 10 x rho0), textbook exchange-ADMM prox
+# centre, and convergence that also needs a small dual residual.
+run_name: price_proto_v3
+out_tag: v3
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-01-02             # local calendar days in slice_tz, end inclusive (D19)
+end: 2023-01-03
+slice_tz: America/Chicago
+seed: 1                       # unused (no randomness), recorded in the header
+m0_expect_mw:                 # runs/m0/ceiling.json on main; the in-process M0 must reproduce these to 0.1 MW
+  recorded: 2745.54
+  ceiling: 2436.80
+headroom_mw: [100]            # target = selfish Central-day peak - headroom (agents/operator.py convention)
+# 1. v2's h100 oracle setting (rho_mid, oracle alpha) with the textbook centre
+oracle_pairs: [[100, 1]]      # [headroom MW, rho multiple of rho_mid]
+rho_mults: []
+theta: 0.2                    # oracle price step: alpha = theta x max central dual / selfish max excess (as v1, v2)
+no_oracle_price_from: configs/m2a.yaml
+no_oracle_headroom_mw: []
+# 2. oracle-free: rho0 = mean daily DA spread x K / median registered power; alpha = rho / N; residual balancing
+free_headroom_mw: [100, 150]
+rb_mu: 10                     # Boyd et al. 2011, sec. 3.4.1 defaults
+rb_tau: 2
+rb_dual: scaled               # compare the primal residual with mu x s / rho0, s = rho x |plan change| (v2: raw change)
+rb_bounds_factor: 1000        # rho floor rho0 / 1000 (as v2)
+rb_rho_max_factor: 10         # rho cap 10 x rho0 (v2: 1000 x)
+prox_centre: textbook         # prox centred on x_prev - (pi_new - pi_old) / (alpha N) (v2: own last plan)
+conv_rule: target+dual        # converged needs max excess <= tol_excess_mw and s <= tol_dual_usd_mwh
+tol_dual_usd_mwh: 6.0         # set before running: just above v2's oracle rows' final s (5.8 and 4.0 $/MWh)
+max_rounds: 400
+within_mw: [1, 5]             # report first and settled rounds with max excess over target within these
+plot_log: true
+prox_deadzone_usd_mwh: 0.05   # PWL prox: largest kink slope at zero change (first secant), $/MWh
+tol_excess_mw: 1.0            # converged: max excess over target <= this
+tol_move_mw: 1.0              #   target-only rule (v2, reported): and max |change in aggregate| <= this
+tol_slack_mw: 5.0             #   and no step priced while more than this below target
+streak: 3                     #   for this many rounds in a row
+harm_rel: 0.01                # section 8 tolerance: max(1% of |selfish value|, $10)
+harm_abs_usd: 10.0

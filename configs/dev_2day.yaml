@@ -1,0 +1,5 @@
+# Two-day dev window for quick iteration (D19).
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-01-02             # local calendar days in slice_tz, end inclusive
+end: 2023-01-03
+slice_tz: America/Chicago     # -> 2023-01-02 06:00 UTC to 2023-01-04 05:45 UTC; stored timestamps stay UTC

@@ -1,0 +1,76 @@
+jan04: today $5,467 sh 0/$0 | ri $5,565 sh 2/$56 | frozen $5,259 sh 4/$161 | max $6,419 sh 0/$0
+jan14: today $6,192 sh 0/$0 | ri $10,305 sh 0/$0 | frozen $18,828 sh 0/$0 | max $9,152 sh 0/$0
+feb08: today $3,160 sh 4/$74 | ri $5,631 sh 0/$0 | frozen $6,595 sh 0/$0 | max $4,485 sh 0/$0
+feb06: today $1,600 sh 0/$0 | ri $3,481 sh 0/$0 | frozen $2,902 sh 0/$0 | max $3,138 sh 0/$0
+mar12: today $5,971 sh 0/$0 | ri $7,977 sh 0/$0 | frozen $3,626 sh 26/$1,161 | max $7,376 sh 0/$0
+mar06: today $28,453 sh 0/$0 | ri $26,864 sh 0/$0 | frozen $26,864 sh 0/$0 | max $28,453 sh 0/$0
+apr08: today $6,262 sh 0/$0 | ri $3,856 sh 5/$406 | frozen $31,522 sh 0/$0 | max $6,291 sh 0/$0
+apr04: today $10,493 sh 0/$0 | ri $11,877 sh 0/$0 | frozen $33,186 sh 0/$0 | max $11,409 sh 0/$0
+may27: today $710 sh 0/$0 | ri $721 sh 0/$0 | frozen $721 sh 0/$0 | max $835 sh 0/$0
+may31: today $5,182 sh 0/$0 | ri $5,879 sh 0/$0 | frozen $5,879 sh 0/$0 | max $5,602 sh 0/$0
+jun16: today $2,064 sh 0/$0 | ri $2,311 sh 0/$0 | frozen $2,327 sh 0/$0 | max $2,202 sh 0/$0
+jun08: today $964 sh 0/$0 | ri $1,190 sh 0/$0 | frozen $1,190 sh 0/$0 | max $1,141 sh 0/$0
+jul11: today $1,984 sh 0/$0 | ri $3,425 sh 0/$0 | frozen $3,425 sh 0/$0 | max $3,112 sh 0/$0
+jul09: today $2,729 sh 0/$0 | ri $1,822 sh 0/$0 | frozen $1,556 sh 0/$0 | max $2,729 sh 0/$0
+aug05: today $1,441 sh 0/$0 | ri $1,944 sh 0/$0 | frozen $1,944 sh 0/$0 | max $1,792 sh 0/$0
+aug03: today $5,583 sh 0/$0 | ri $5,989 sh 0/$0 | frozen $5,862 sh 0/$0 | max $5,806 sh 0/$0
+sep15: today $420 sh 0/$0 | ri $435 sh 0/$0 | frozen $-209 sh 0/$0 | max $426 sh 0/$0
+sep03: today $1,959 sh 0/$0 | ri $1,840 sh 0/$0 | frozen $1,840 sh 0/$0 | max $2,394 sh 0/$0
+oct09: today $99 sh 0/$0 | ri $158 sh 0/$0 | frozen $-190 sh 0/$0 | max $163 sh 0/$0
+oct02: today $4,123 sh 0/$0 | ri $3,508 sh 0/$0 | frozen $3,508 sh 0/$0 | max $4,124 sh 0/$0
+nov26: today $2,987 sh 1/$12 | ri $2,140 sh 18/$902 | frozen $6,976 sh 0/$0 | max $3,541 sh 0/$0
+nov11: today $4,115 sh 47/$1,854 | ri $6,582 sh 2/$22 | frozen $5,539 sh 23/$575 | max $7,289 sh 0/$0
+dec05: today $21,422 sh 0/$0 | ri $19,825 sh 0/$0 | frozen $11,369 sh 0/$0 | max $21,808 sh 0/$0
+dec09: today $6,170 sh 1/$11 | ri $3,569 sh 34/$893 | frozen $2,208 sh 47/$2,036 | max $6,174 sh 1/$11
+{
+ "today": {
+  "operator_payout_usd": 129550.56,
+  "settlement_harmed": 53,
+  "settlement_harm_usd": 1951.81,
+  "harmed": 221,
+  "harm_usd": 25902.22,
+  "windows_with_settlement_harm": [
+   "feb08 (4, $74.32)",
+   "nov26 (1, $12.11)",
+   "nov11 (47, $1,854.22)",
+   "dec09 (1, $11.17)"
+  ]
+ },
+ "ri": {
+  "operator_payout_usd": 136894.1,
+  "settlement_harmed": 61,
+  "settlement_harm_usd": 2279.18,
+  "harmed": 229,
+  "harm_usd": 29022.18,
+  "windows_with_settlement_harm": [
+   "jan04 (2, $55.63)",
+   "apr08 (5, $406.33)",
+   "nov26 (18, $901.95)",
+   "nov11 (2, $21.81)",
+   "dec09 (34, $893.46)"
+  ]
+ },
+ "frozen": {
+  "operator_payout_usd": 182725.72,
+  "settlement_harmed": 100,
+  "settlement_harm_usd": 3933.16,
+  "harmed": 258,
+  "harm_usd": 31706.81,
+  "windows_with_settlement_harm": [
+   "jan04 (4, $160.89)",
+   "mar12 (26, $1,160.89)",
+   "nov11 (23, $575.43)",
+   "dec09 (47, $2,035.95)"
+  ]
+ },
+ "max": {
+  "operator_payout_usd": 145860.92,
+  "settlement_harmed": 1,
+  "settlement_harm_usd": 11.14,
+  "harmed": 208,
+  "harm_usd": 24606.95,
+  "windows_with_settlement_harm": [
+   "dec09 (1, $11.14)"
+  ]
+ }
+}

@@ -1,0 +1,6 @@
+# D61 attack runs (pre-registered, docs/plans/d61_attacks_check.md): M0 ceiling for 2023-06-29 to 2023-06-30 -> runs/m0_jun29/.
+data_dir: ../data
+start: 2023-06-29
+end: 2023-06-30
+slice_tz: America/Chicago
+m0_dir: runs/m0_jun29

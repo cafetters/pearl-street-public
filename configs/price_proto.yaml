@@ -1,0 +1,23 @@
+# Price-mode clearing prototype (bench/price_mode_proto.py). Standalone: no exchange messages.
+run_name: price_proto
+data_dir: ../data             # relative to repo root; Engie data is never copied in
+start: 2023-01-02             # local calendar days in slice_tz, end inclusive (D19)
+end: 2023-01-03
+slice_tz: America/Chicago
+seed: 1                       # unused (no randomness), recorded in the header
+m0_expect_mw:                 # runs/m0/ceiling.json on main; the in-process M0 must reproduce these to 0.1 MW
+  recorded: 2745.54
+  ceiling: 2436.80
+headroom_mw: [100, 150]       # target = selfish Central-day peak - headroom (agents/operator.py convention)
+rho_mults: [0.1, 1, 10]       # rho = rho_mid x mult; rho_mid = max central dual / median battery power
+theta: 0.2                    # price step: alpha = theta x price_ref / selfish max excess over target
+no_oracle_price_from: configs/m2a.yaml   # its price_cap_usd_mwh (imbalance = zone scarcity price); slice max RT if none
+no_oracle_headroom_mw: [100, 150]
+max_rounds: 150
+prox_deadzone_usd_mwh: 0.05   # PWL prox: largest kink slope at zero change (first secant), $/MWh
+tol_excess_mw: 1.0            # converged: max excess over target <= this
+tol_move_mw: 1.0              #   and max |change in aggregate| between rounds <= this
+tol_slack_mw: 5.0             #   and no step priced while more than this below target
+streak: 3                     #   for this many rounds in a row
+harm_rel: 0.01                # section 8 tolerance: max(1% of |selfish value|, $10)
+harm_abs_usd: 10.0
