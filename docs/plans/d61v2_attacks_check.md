@@ -1,10 +1,9 @@
 # D61 v2: the attack check on fresh windows
 
-> **DRAFT for the owner (Nov 6 evening, item 12; updated Nov 8 on branch `v2-prereqs`, item 6 of the Nov 7-8
-> unattended block; re-pinned Nov 11 to the build commit `e33e9b9`, owner decisions 1-4). Still not a
-> pre-registration.** It becomes one only when the owner has
-> read it and it is committed with a message saying so. Nothing has run on the v2 windows, M0 included, and nothing
-> runs on them before that commit. D61's pre-registered verdict (FAIL, `2d61911`) stands; v2 is a new test on new
+> **Pre-registration (owner's go, Nov 11).** Drafted Nov 6 evening (item 12), updated Nov 8 on branch `v2-prereqs`,
+> re-pinned Nov 11 to the build commit `e33e9b9` and merged into main (`f7128ab`). The pre-registration commit is the
+> commit that adds this paragraph, with a message saying so; every v2 run uses it. Nothing had run on the v2
+> windows, M0 included, before that commit. D61's pre-registered verdict (FAIL, `2d61911`) stands; v2 is a new test on new
 > windows, not a rerun of D61.
 
 ## The test
@@ -114,8 +113,11 @@ cell and can't be split by attacker).
 - the D90 feasibility-at-filing result;
 - the full-slice peak (the footnote).
 
-**Conditional max-rule reruns** (report only), as D61: any cell with an attacker's gain above $1e-6, and its twin
-once. The cell-to-twin mapping is `twin_of()` (`bench/d61v2_run_queue.py`, D90), which covers every attack name.
+**Conditional max-rule reruns** (report only), D61's rule (owner, Nov 11, go decision 1): any $5 or m = 0 cell where
+the attacker's gain under today's rule is above $1e-6 (`GAIN_GUARD_USD`, from the judge's `judge.json`), plus its
+twin once, reruns with its `_max` config (`settlement_rule: max_first_call`). The `--names` list is built from the
+judge's output and recorded in the report before the reruns launch. The cell-to-twin mapping is `twin_of()`
+(`bench/d61v2_run_queue.py`, D90), which covers every attack name.
 
 ## Where it runs
 
@@ -124,8 +126,31 @@ once. The cell-to-twin mapping is `twin_of()` (`bench/d61v2_run_queue.py`, D90),
   - Concurrency 10 or less; Small sandboxes; a declared budget; time limit 2× the concurrency-10 runtime.
   - An empty sandbox list after every queue; cost logged.
   - M0, controllable M0 and feasibility run on the laptop, one window at a time (LP only).
-- **Order:** M0 and feasibility per window; then each window's $5 twin and its cells, with each cell's check after
-  its pair; then the m = 0 twins and cells; then the conditional reruns.
+- **One checkout (owner, Nov 11, go decision 3):** everything for v2 runs from the worktree `../pearl-street-v2run`,
+  detached at the pre-registration commit: M0, controllable M0, feasibility, the queue, the judge with its D90
+  replays (`--d90-code-root` is that worktree) and the reruns. Its HEAD never moves. Reports are committed on main
+  from the main checkout only.
+- **Commands** (from `../pearl-street-v2run`, per window `<w>` in the order above):
+  - `python -m bench.m0 configs/d61v2/m0_<w>.yaml` (writes `runs/m0_<w>/run.json`);
+  - `python -m bench.m0 configs/d61v2/h2h_c_d61v2_<w>_twin_m5.yaml --controllable` (`run_controllable.json`);
+  - `python -m bench.h2h_feasibility --controllable --out runs/d61v2/feas/<w>.json
+    configs/d61v2/h2h_c_d61v2_<w>_twin_m5.yaml`;
+  - then `python -u -m bench.d61v2_cloud --configs configs/d61v2 --glob 'h2h_c_d61v2_*.yaml' --m0-root .
+    --commit <pre-registration commit> --d90-code-root . --data-dir ../data` with the queue settings below (60 runs;
+    the sep05 smoke configs are not selected).
+- **M0 headers (owner, Nov 11, go decision 2):** after each M0 and controllable M0, `run.json` and
+  `run_controllable.json` must name the pre-registration commit with no `-dirty`. Any mismatch stops before the
+  queue.
+- **Memory and the launcher (owner, Nov 11):** M0 and feasibility start only with at least 2 GB free (checked every
+  10 minutes until then). The queue uses `--max-awake 10` if at least 1.5 GB is free at launch, otherwise 6, with
+  concurrency at most `--max-awake`. The launcher runs as a background task of the Claude Code session, checked in
+  the foreground at least every 15 minutes. If it is stopped, the same queue resumes at the same commit with the
+  remaining runs (pre-approved), under a new queue id. The independent sandbox listing must be empty after every
+  queue and every stop. Spend cap for the block: $5.
+- **Order:** M0 and feasibility per window; then each window's $5 twin and its cells; then the m = 0 twins and
+  cells; then the conditional reruns. `bench/d61v2_cloud.py` judges every pair after the queue ends (corrected Nov 11:
+  D61's local queue checked each cell after its pair). If the queue was stopped and resumed, `--judge-only` runs once
+  over the full 60-config selection into a new output folder, and that single judge output is the recorded verdict.
 - **Estimate (Nov 8, from the rehearsal on D61's windows at `d471a72` with these settings) [sim, in-run]:**
   - Runtime: a $5 run took a median of about 800 s at concurrency 10 (`v2r-main`, 7 runs) and 666 s at concurrency 6
     (`v2r-main2`, 37 runs); an m = 0 run 229 s (16 runs). Time limit 1 h (`--measured-runtime-s 1000`).
@@ -197,7 +222,7 @@ once. The cell-to-twin mapping is `twin_of()` (`bench/d61v2_run_queue.py`, D90),
 - The sep05 T3-c check runs (`t3c-par`).
 - **For the v2 windows, only their recorded daily peaks.** No M0, no run, no price.
 
-## Pins (Nov 11, DRAFT; LF sha256 = `git show <commit>:<path> | sha256sum`, this checkout has core.autocrlf true)
+## Pins (Nov 11; LF sha256 = `git show <commit>:<path> | sha256sum`, this checkout has core.autocrlf true)
 
 Tools at the build commit `e33e9b9` (Nov 11; the two changed since `55c0897` are marked):
 
@@ -217,13 +242,9 @@ Tools at the build commit `e33e9b9` (Nov 11; the two changed since `55c0897` are
 Configs: `configs/d61v2/` (127 files), one LF sha256 per file in `docs/plans/d61v2_configs.sha256`; that manifest's
 own sha256 is `2aafd98b4d8acfa22054ce012fb48ab8ed704393a61cbed865f2ec5b541fce2e`.
 
-## What remains for the owner before the pre-registration commit (Nov 11)
+## Before the pre-registration commit (record)
 
 Done Nov 11: D91 approved as staged and applied to PLAN.md on main (`cb5b0b1`); the dirty-check fix (`e33e9b9`, the
-build commit); the smoke at the build commit (prerequisite 3); these pins; `v2-prereqs` merged into main (the merge commit follows this edit).
-
-1. The owner's go for the pre-registration commit: this file without "DRAFT", committed on main with a message
-   saying so. The pins above name blobs; any later change to a pinned file needs new pins. Twins and cells run at
-   that commit; the judge's D90 step needs a clean checkout of it (`--d90-code-root`).
-2. Then, at that commit: M0, controllable M0 and feasibility for the four v2 windows (nothing has touched those
-   dates), then the queue.
+build commit); the smoke at the build commit (prerequisite 3); these pins; `v2-prereqs` merged into main
+(`f7128ab`); PLAN.md statuses (`bf42733`). The owner gave the go on Nov 11 with go decisions 1-3 above (conditional
+reruns, M0 headers, one checkout). The pins name blobs; any later change to a pinned file needs new pins.
