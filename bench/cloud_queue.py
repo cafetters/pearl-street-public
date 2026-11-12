@@ -122,7 +122,8 @@ AWAKE_WAIT_S, AWAKE_GIVE_UP_S = 60, 1800  # account at --max-awake: re-check eve
 RETRYABLE = re.compile(r"HTTP (?:429|502|503|504)\b|\"code\":\s*\"(?:rate_limit\w*|too_many_requests|awake_limit\w*|"
                        r"no_ready_machine|capacity\w*|unavailable|service_unavailable|overloaded)\"", re.I)
 RETRY_HINT = re.compile(r"retry[-_ ]?after(?:[-_ ]?(ms|seconds|s))?\"?\s*[:=]?\s*\"?(\d+(?:\.\d+)?)", re.I)
-SECRETS = [(re.compile(r"\b(mst|mut|sk|pk)_[A-Za-z0-9_-]{8,}"), r"\1_***"),
+SECRETS = [(re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}"), "sk-***"),       # M4: provider key shapes
+           (re.compile(r"\b(mst|mut|sk|pk)_[A-Za-z0-9_-]{8,}"), r"\1_***"),
            (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"), "JWT***"),
            (re.compile(r"(?i)(bearer\s+)[^\s\"',}]+"), r"\1***"),
            (re.compile(r"(?i)(x-maritime-token\"?\s*[:=]\s*\"?)[^\s\"',}]+"), r"\1***"),
@@ -147,6 +148,9 @@ STATUS_SH = """#!/bin/bash
 cd /home/user/job
 if [ -f "$1.exit" ]; then echo "EXIT $(cat "$1.exit")"; else echo "RUNNING $(tail -n 1 "$1.log" 2>/dev/null | cut -c1-160)"; fi
 """
+# M4: --llm queues install the provider SDKs at these exact pins (the `llm` extra, as tested locally; the snapshot has
+# neither); code-only queues install nothing extra.
+LLM_PINS = ("anthropic==2.8.0", "openai==3.49.0")
 SETUP_SH = """set -eu
 rm -rf {code}
 git init -q {code}
@@ -158,7 +162,7 @@ cp {job}/config.yaml runs/_cloud/{run_name}.yaml
 if ls {job}/m0/* >/dev/null 2>&1; then cp {job}/m0/* {m0_dir}/; fi
 {context_cmds}
 {home}/venv/bin/python -m pip install --no-input -q -e . --no-deps
-echo "FREEZE_SHA256 $({home}/venv/bin/python -m pip freeze --all --exclude-editable | sha256sum | cut -d' ' -f1)"
+{llm_install}echo "FREEZE_SHA256 $({home}/venv/bin/python -m pip freeze --all --exclude-editable | sha256sum | cut -d' ' -f1)"
 echo "HEAD $(git rev-parse HEAD)"
 echo "PORCELAIN_BEGIN"
 git status --porcelain
@@ -166,7 +170,7 @@ echo "PORCELAIN_END"
 """
 RUN_SH = """set -u
 cd {code}
-{home}/venv/bin/python -u {job}/measure.py {job}/metrics.json -- {home}/venv/bin/python -u -m {module} runs/_cloud/{run_name}.yaml
+{secret_check}{home}/venv/bin/python -u {job}/measure.py {job}/metrics.json -- {home}/venv/bin/python -u -m {module} runs/_cloud/{run_name}.yaml
 rc=$?
 if [ -d runs/{run_name} ]; then
   tar czf {job}/out.tgz -C runs {run_name} && sha256sum {job}/out.tgz | cut -d' ' -f1 > {job}/out.sha256
@@ -189,10 +193,32 @@ class QueueError(Exception):
     pass
 
 
+_SECRET_VALUES: list[str] = []          # --secret-env values for this process, held in memory only
+
+
 def redact(text: str) -> str:
+    for v in _SECRET_VALUES:
+        text = text.replace(v, "***secret-env***")
     for pat, sub in SECRETS:
         text = pat.sub(sub, text)
     return text
+
+
+def forget_secret_values() -> None:
+    _SECRET_VALUES.clear()
+
+
+def scrub_file(path: Path) -> bool:
+    """True if the file held a --secret-env value; the value is then overwritten in place, so no copy stays on disk."""
+    if not _SECRET_VALUES or not path.is_file():
+        return False
+    data = path.read_bytes()
+    hit = any(v.encode() in data for v in _SECRET_VALUES)
+    if hit:
+        for v in _SECRET_VALUES:
+            data = data.replace(v.encode(), b"***secret-env***")
+        path.write_bytes(data)
+    return hit
 
 
 def retry_hint_s(text: str):
@@ -421,6 +447,14 @@ class ApiPolls:
     def usage(self, sbx):
         return self._call("GET", f"{self.base}/v1/sandboxes/{sbx}/usage")
 
+    def start_bg(self, sbx, cmd, env):
+        """--secret-env: start a background command with an env map in the data-plane POST body (HTTPS), so a value
+        is never on a local command line. Request bodies are never logged; errors are redacted."""
+        url = self._data_plane(sbx)
+        r = self._call("POST", f"{url}/commands", {"cmd": list(cmd), "env": dict(env), "background": True},
+                       auth="sandbox", sbx=sbx)
+        return r.get("id")
+
     def state(self, sbx):
         return self._call("GET", f"{self.base}/v1/sandboxes/{sbx}/info").get("state")
 
@@ -470,7 +504,8 @@ class Journal:
         self.path, self.lock = path, threading.Lock()
 
     def add(self, event, **kw):
-        line = json.dumps({"event": event, "utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), **kw})
+        line = redact(json.dumps({"event": event, "utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                  **kw}))
         with self.lock, open(self.path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()
@@ -659,10 +694,11 @@ def read_runs(args):
                 raise QueueError(f"{m0_path}: M0 folder has no ceiling.json")
             m0_check = m0_window(cfg, m0_path)
         context = run_context(cfg, name, cfg_path, Path(args.runs_from).resolve())
+        context += llm_cache_context(cfg, name, Path(args.runs_from).resolve())     # M4: D95 staged cache input
         for p in m0_files:
             if not NAME_OK.match(p.name):
                 raise QueueError(f"{p}: file name not allowed")
-        llm = sorted(k for k, v in cfg.items() if "llm" in str(k).lower() and v not in (None, False, 0, "", "none"))
+        llm = llm_reasons(cfg)
         if llm and not args.llm:
             raise QueueError(f"{cfg_path}: has LLM settings {llm}: declare the queue with --llm (cap {CAP_LLM})")
         dest = REPO / "runs" / "cloud" / name
@@ -671,10 +707,122 @@ def read_runs(args):
         if dest.exists():
             raise QueueError(f"{dest} exists without DONE: an unfinished or pre-DONE download, not a result; move it "
                              f"aside before re-running {name} (the launcher never deletes or overwrites it)")
-        runs.append({"name": name, "config": cfg_path, "m0": m0_path, "m0_files": m0_files, "m0_dir": m0_dir,
+        runs.append({"name": name, "config": cfg_path, "cfg": cfg, "m0": m0_path, "m0_files": m0_files, "m0_dir": m0_dir,
                      "config_sha256": hashlib.sha256(cfg_path.read_bytes()).hexdigest(), "dest": dest,
                      "m0_window": m0_check, "context": context})
     return runs
+
+
+# ---- M4: LLM runs (D94 spend caps, D95 shared cache, the owner's cost estimator; plan test 14) ----
+
+def llm_reasons(cfg: dict) -> list[str]:
+    """Why a config needs --llm: an LLM chooser (fleet or per agent) in llm_strategy, or any other truthy top-level key
+    naming llm. An llm_strategy with only Fixed/Rule choosers is code-only."""
+    out = []
+    for k, v in cfg.items():
+        if "llm" not in str(k).lower() or v in (None, False, 0, "", "none"):
+            continue
+        if k == "llm_strategy" and isinstance(v, dict):
+            if str(v.get("chooser", "fixed")) == "llm":
+                out.append("llm_strategy.chooser=llm")
+            if any(str(c) == "llm" for c in (v.get("per_agent") or {}).values()):
+                out.append("llm_strategy.per_agent=llm")
+        else:
+            out.append(str(k))
+    return out
+
+
+def llm_estimates(cfgs, n_agents: int = 80, log=print) -> dict:
+    """Print each LLM run's worst-case cost before the queue starts; refuse a run whose worst case exceeds its cap."""
+    from bench import llm_cost_estimate as E
+    out = {}
+    for cfg in cfgs:
+        if not llm_reasons(cfg):
+            continue
+        r = E.check_config(cfg, n_agents=n_agents)
+        out[cfg["run_name"]] = r
+        log(f"[{cfg['run_name']}] LLM estimate: {r.get('llm_agents')} LLM agents, {r.get('days')} days, preset "
+            f"{r.get('preset')}, worst case ${r.get('worst_usd', 0.0):.4f} vs run cap {r.get('cap_usd_run')}")
+        if not r["ok"]:
+            raise QueueError(f"{cfg['run_name']}: {r['why']}")
+    return out
+
+
+def check_phase(cfgs, phase_cap: float, phase_spent: float) -> float:
+    """D94: reserve every LLM run's whole cap against the phase cap before launch; refuse if it doesn't fit."""
+    total = float(phase_spent)
+    for cfg in cfgs:
+        if not llm_reasons(cfg):
+            continue
+        cap = (cfg.get("llm_strategy") or {}).get("cap_usd_run")
+        if cap is None:
+            raise QueueError(f"{cfg.get('run_name')}: an LLM run needs llm_strategy.cap_usd_run (D94)")
+        total += float(cap)
+    if total > float(phase_cap) + 1e-12:
+        raise QueueError(f"phase cap ${phase_cap:.2f}: spent ${phase_spent:.2f} + run caps reach ${total:.2f}")
+    return total
+
+
+def _cache_spec(cfg) -> dict:
+    ls = cfg.get("llm_strategy")
+    return (ls.get("cache") or {}) if isinstance(ls, dict) else {}
+
+
+def llm_cache_context(cfg, name, runs_from: Path):
+    """D95: a recorded cache sits in the run's own folder (so it is downloaded); a read_through or replay run uploads
+    the cache its twin recorded, which must already be downloaded under runs_from."""
+    c = _cache_spec(cfg)
+    mode, path = str(c.get("mode", "off")), c.get("path")
+    if mode in ("off", "None") or path is None:
+        return []
+    parts = str(path).replace(chr(92), "/").split("/")
+    if len(parts) != 3 or parts[0] != "runs" or parts[2] != "llm_cache.jsonl" or not NAME_OK.match(parts[1]):
+        raise QueueError(f"{name}: llm cache path must be runs/<run>/llm_cache.jsonl, not {path!r}")
+    if mode == "record":
+        if parts[1] != name:
+            raise QueueError(f"{name}: a recorded cache must be runs/{name}/llm_cache.jsonl (downloaded with the run)")
+        return []
+    src = runs_from / parts[1] / "llm_cache.jsonl"
+    if not src.is_file():
+        raise QueueError(f"{name}: {mode} needs {src}, the twin's downloaded cache (run the twin first)")
+    return [(src, f"{parts[1]}/llm_cache.jsonl")]
+
+
+def check_cache_stages(cfgs) -> None:
+    """D95 order: a run reading a cache can't share a queue with the run that records it (run the twin first)."""
+    recorded = {str(_cache_spec(c).get("path")) for c in cfgs if _cache_spec(c).get("mode") == "record"}
+    for cfg in cfgs:
+        c = _cache_spec(cfg)
+        if c.get("mode") in ("read_through", "replay") and str(c.get("path")) in recorded:
+            raise QueueError(f"{cfg.get('run_name')}: reads a cache recorded in this same queue; queue the twin first")
+
+
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def check_secret_env(names) -> dict:
+    """Keys reach a sandbox only as runtime environment variables, never in an uploaded file, config or log (D96).
+    Method (confirmed Nov 12 with dummy non-secret values, owner decision 6): the run stage only, started with an `env`
+    map in the data-plane POST /commands body (background), so a value is never on a local command line (the CLI's
+    `sandbox exec --env NAME=VALUE` also works but puts the value in maritime.cmd's argv; `--env NAME` alone is
+    refused). The value arrived in the command's environment (sha256 match), was absent from a later command, and was
+    in no Maritime record read back (history keeps argv, stdout and stderr, not env; info; get) and in no local CLI
+    file. Needs the API path (refused with --cli-polls). Each value is read from the local environment here, held in memory, and redacted from every error,
+    log line and report; a run whose downloaded output or logs hold a value fails and the value is overwritten.
+    Fails closed: a bad name, an unset or empty variable, or a cmd.exe metacharacter or whitespace in the value."""
+    out = {}
+    for n in names or []:
+        if not ENV_NAME.match(n):
+            raise QueueError(f"--secret-env {n!r} is not an environment variable name")
+        v = os.environ.get(n)
+        if not v:
+            raise QueueError(f"--secret-env {n} is not set (or empty) in the local environment")
+        if CMD_META.search(v) or any(c.isspace() for c in v):
+            raise QueueError(f"--secret-env {n}: the value has a cmd.exe metacharacter or whitespace (value not shown)")
+        out[n] = v
+        if v not in _SECRET_VALUES:
+            _SECRET_VALUES.append(v)
+    return out
 
 
 def check_caps(args, runs):
@@ -786,6 +934,7 @@ class LauncherLock:
 class Queue:
     def __init__(self, args, runs, limit_s, qdir, mar, log):
         self.args, self.runs, self.limit_s, self.qdir, self.mar, self.log = args, runs, limit_s, qdir, mar, log
+        self.secret_env = {}       # --secret-env name -> value, memory only; main() sets it
         self.polls = CliPolls(mar) if getattr(args, "cli_polls", False) else ApiPolls(log)
         self.lock = threading.Lock()
         self.created = []          # every sandbox id this queue created, for cleanup
@@ -915,6 +1064,8 @@ class Queue:
         for f in ("setup.log", "run.log", "metrics.json"):
             try:
                 self.mar.cp_down(sbx, f"{JOB}/{f}", d / f)
+                if scrub_file(d / f):
+                    self.log(f"[{r['name']}] {f} held a --secret-env value: overwritten in the saved copy")
                 got.append(f)
             except Exception:  # noqa: BLE001 (a stage that never started has no log)
                 pass
@@ -967,7 +1118,12 @@ class Queue:
         jobdir = Path(tempfile.mkdtemp(prefix=f"cq_{r['name']}_", dir=self.qdir))
         ctx = "\n".join(f"mkdir -p runs/{rel.rsplit('/', 1)[0]} && cp {JOB}/ctx/{i}.json runs/{rel}"
                         for i, (_, rel) in enumerate(r["context"]))
+        check = "".join(f'if [ -z "${{{n}:-}}" ]; then echo "SECRET_ENV {n} missing"; exit 97; fi\n'
+                        f'echo "SECRET_ENV {n} present"\n' for n in sorted(self.secret_env))
         fmt = {"code": CODE, "job": JOB, "home": HOME, "commit": self.full_commit, "run_name": r["name"],
+               "secret_check": check,
+               "llm_install": (f"{HOME}/venv/bin/python -m pip install --no-input -q {' '.join(LLM_PINS)}\n"
+                               if getattr(self.args, "llm", False) else ""),
                "m0_dir": r["m0_dir"], "module": self.args.module, "context_cmds": ctx}
         for fname, text in (("stage.sh", STAGE_SH), ("status.sh", STATUS_SH), ("setup.sh", SETUP_SH.format(**fmt)),
                             ("run.sh", RUN_SH.format(**fmt)), ("measure.py", MEASURE_PY)):
@@ -1033,7 +1189,7 @@ class Queue:
         self.mar.exec_bg(sbx, "bash", f"{JOB}/stage.sh", "setup")
         rc, secs = self.wait_stage(sbx, "setup", 1200)
         log_text = self.mar.exec(sbx, "cat", f"{JOB}/setup.log").stdout
-        r["setup_log"] = log_text
+        r["setup_log"] = redact(log_text)
         if rc != 0:
             raise RunError(f"setup exit {rc}: {log_text.strip()[-500:]}")
         head = re.search(r"^HEAD ([0-9a-f]{40})$", log_text, re.M)
@@ -1050,13 +1206,16 @@ class Queue:
 
     def start_and_poll(self, r, sbx, row):
         self.check_stop("run")
-        self.mar.exec_bg(sbx, "bash", f"{JOB}/stage.sh", "run")
+        if self.secret_env:       # values only in an HTTPS body, never on a maritime.cmd command line
+            self.polls.start_bg(sbx, ["bash", f"{JOB}/stage.sh", "run"], self.secret_env)
+        else:
+            self.mar.exec_bg(sbx, "bash", f"{JOB}/stage.sh", "run")
         self.log(f"[{r['name']}] run started")
         rc, secs = self.wait_stage(sbx, "run", self.limit_s, row=row, name=r["name"])
         r["run_exit"], r["run_poll_s"] = rc, round(secs, 1)
         if rc != 0:
             tail = self.mar.exec(sbx, "tail", "-n", "30", f"{JOB}/run.log", check=False).stdout
-            r["run_log_tail"] = tail
+            r["run_log_tail"] = tail = redact(tail)
             raise RunError(f"run exit {rc}: {tail.strip()[-500:]}")
         self.log(f"[{r['name']}] run finished ({secs:.0f} s)")
 
@@ -1095,6 +1254,12 @@ class Queue:
             traces = sorted(str(t.relative_to(out)).replace("\\", "/") for t in out.rglob("trace.jsonl"))
             if missing or not traces:
                 raise OutputIncomplete(f"run exited 0 but its output lacks {missing + ([] if traces else ['any trace.jsonl'])}")
+            if _SECRET_VALUES:                  # --secret-env: no value may reach a kept file
+                leaked = [str(f.relative_to(part)) for f in sorted(part.rglob("*")) if scrub_file(f)]
+                leaked += [f"dl/{f.name}" for f in sorted(stage.iterdir()) if scrub_file(f)]
+                if leaked:
+                    shutil.rmtree(stage, ignore_errors=True)
+                    raise RunError(f"a --secret-env value was found in {leaked[:5]}: output not kept, values overwritten")
             cdir = out / "cloud"
             cdir.mkdir(parents=True, exist_ok=True)
             for f in ("metrics.json", "run.log", "setup.log", "out.sha256"):
@@ -1272,6 +1437,10 @@ def main(argv=None):
                     help="pilot only: run without an M0 folder (give any path as M0_FOLDER); measures runtime, not a "
                          "result")
     ap.add_argument("--llm", action="store_true", help="the runs call an LLM (concurrency cap 5)")
+    ap.add_argument("--phase-cap-usd", type=float, default=None, help="M4 (D94): the LLM phase cap; required with --llm")
+    ap.add_argument("--phase-spent-usd", type=float, default=0.0, help="LLM spend already reconciled in this phase")
+    ap.add_argument("--secret-env", nargs="*", default=[], help="env var names passed to the run (fails closed until "
+                    "the pilot confirms the CLI method)")
     ap.add_argument("--runs-from", default=None,
                     help="local runs folder holding what a config reads from other runs (compare_to summary, an "
                          "earlier summary with ablation_150); default this checkout's runs/")
@@ -1319,7 +1488,7 @@ def main(argv=None):
     log_lock, log_file = threading.Lock(), open(qdir / "queue.log", "a", encoding="utf-8")
 
     def log(msg):
-        line = f"{datetime.now(timezone.utc).strftime('%H:%M:%SZ')} {msg}"
+        line = redact(f"{datetime.now(timezone.utc).strftime('%H:%M:%SZ')} {msg}")
         with log_lock:
             print(line, flush=True)
             log_file.write(line + "\n")
@@ -1337,6 +1506,20 @@ def main(argv=None):
             lock = LauncherLock().acquire(args.queue_id)
         runs = read_runs(args)
         check_caps(args, runs)
+        secret_env = check_secret_env(args.secret_env)
+        report["secret_env"] = sorted(secret_env)          # names only
+        if secret_env and args.cli_polls:
+            raise QueueError("--secret-env needs the API path (values go in an HTTPS body); drop --cli-polls")
+        if secret_env:
+            log(f"--secret-env: {sorted(secret_env)} passed to each run stage in the data-plane POST body "
+                "(values not shown)")
+        cfgs = [r["cfg"] for r in runs]
+        check_cache_stages(cfgs)
+        if args.llm:     # M4: the owner's estimate before every --llm queue, then the phase allocation (D94)
+            report["llm_estimates"] = llm_estimates(cfgs, log=log)
+            if args.phase_cap_usd is None:
+                raise QueueError("--llm needs --phase-cap-usd (D94: fail closed)")
+            report["llm_phase_committed_usd"] = check_phase(cfgs, args.phase_cap_usd, args.phase_spent_usd)
         limit_s = limit_seconds(args)
         report["time_limit_s"], report["idle"] = limit_s, IDLE
         report["spend_check"] = check_spend(args, mar, limit_s, log)
@@ -1361,7 +1544,7 @@ def main(argv=None):
             ok = True
             return 0
         q = Queue(args, runs, limit_s, qdir, mar, log)
-        q.bundle, q.full_commit = bundle, full
+        q.bundle, q.full_commit, q.secret_env = bundle, full, secret_env
         log(f"polls: {'maritime.cmd (--cli-polls)' if args.cli_polls else 'Maritime API (' + API_BASE + ')'}")
         log(f"stop: Ctrl+C, or create {(qdir / 'STOP').relative_to(REPO)}")
         results = q.run_all(qdir / "STOP")
@@ -1446,7 +1629,7 @@ def main(argv=None):
         if q is not None:
             report["stop_reason"] = q.stop_reason
         try:
-            (qdir / "report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+            (qdir / "report.json").write_text(redact(json.dumps(report, indent=2, default=str)), encoding="utf-8")
         except Exception as e:  # noqa: BLE001
             log(f"REPORT NOT WRITTEN: {e!r}")
             ok = False

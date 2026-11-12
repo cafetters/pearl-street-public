@@ -407,6 +407,30 @@ def window_result(r: dict, w0: int, iso: list[str]) -> dict:
     return out
 
 
+def t4_threshold(cfg, s: Slice, trailing_days: int = 30) -> float | None:
+    """D97 T4 (and the Rule chooser's fallback): the 75th percentile of the daily DA spread (max - min) over the
+    trailing `trailing_days` local days of published DA prices before the window start. Public data, read here (the
+    simulator), never in exchange/. An explicit llm_strategy.t4_threshold_usd_mwh wins (synthetic tests); a window
+    with no earlier day in the data has no threshold (T4 cannot fire), recorded as None."""
+    spec = cfg.get("llm_strategy") or {}
+    if spec.get("t4_threshold_usd_mwh") is not None:
+        return float(spec["t4_threshold_usd_mwh"])
+    import pandas as pd
+    from sim.data import SYS_FILE, SYSTEM_COLS, _read_range, local_range
+    w0 = pd.Timestamp(cfg["start"])
+    t0, t1 = local_range(str((w0 - pd.Timedelta(days=trailing_days)).date()), str(w0.date()), TZ)
+    col = SYSTEM_COLS["price_da"]
+    df = _read_range(Path(cfg["data_dir"]) / SYS_FILE, ["timestamp", col], t0, t1)
+    if df.empty:
+        return None
+    local = pd.DatetimeIndex(df.timestamp).tz_convert(TZ)
+    keep = local.date < w0.date()
+    if not keep.any():
+        return None
+    sp = pd.Series(df[col].to_numpy(float)[keep]).groupby(local.date[keep]).agg(lambda v: v.max() - v.min())
+    return float(np.percentile(sp.to_numpy(), 75))
+
+
 def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=None, off=(), prev: Slice | None = None,
                 suffix: str = "", window_start_utc: str | None = None) -> dict:
     """window_start_utc (warm-up, set by main from warmup_days): the reported window starts there; the exchange
@@ -479,6 +503,17 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
     attackers = list(cfg.get("attackers") or [])           # D61: wrappers around honest agents, named in the header
     if attackers and ex is not None:
         header["attackers"] = attackers
+    strat = None
+    if cfg.get("llm_strategy") and ex is not None:    # M4 (D12, D59, D92-D97): only with the block; else unchanged
+        if not fl["price_mode"]:
+            raise ValueError("llm_strategy needs price_mode (the posture sets arm C's peak-response margin)")
+        from agents.strategy import StrategyRun
+        strat = StrategyRun(cfg["llm_strategy"], roster=[str(s.ids[i]) for i in part],
+                            power_kw={str(s.ids[i]): float(fleet.P[j]) for j, i in enumerate(part)},
+                            attackers={str(x.get("agent")) for x in attackers}, local_dates=[str(d) for d in clock.local.date],
+                            seed=cfg["seed"], run_id=run_id, config_margin=margin,
+                            t4_threshold=t4_threshold(cfg, s))
+        header["llm_strategy"] = strat.header()
     logger = TraceLogger(out_dir / variant / "trace.jsonl", header)
     referee = ex is not None and fl["prep_clearing"] and fl["no_rebound"]
     # fix 1 (memory): the summary only counts these types; the D34 referee reads pre-award nominations in full
@@ -520,6 +555,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                           plan_to_nomination=fl["plan_to_nomination"], use_room=fl["publish_room"],
                           price_mode=fl["price_mode"], prox_eps_usd_mwh=cfg.get("prox_deadzone_usd_mwh", 0.05),
                           peak_response_margin_usd_mwh=margin)
+        if strat is not None:      # strategy inside, attack wrapper outside (D61: the menu doesn't bind attackers)
+            ag = strat.wrap(ag)
         if ex is not None:
             for spec in attackers:
                 if spec.get("agent") == ag.id:
@@ -750,6 +787,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
     if bus.refused:          # D69: refused messages (forged sender, direct delivery, malformed), outside the summary
         with open(out_dir / variant / "refused.json", "w", encoding="utf-8") as f:
             json.dump(bus.refused, f, indent=1)
+    if strat is not None:      # M4: the call log sits next to the trace, with the run's id, config, seed and commit
+        strat.write_sidecar(out_dir / variant / "llm_calls.jsonl", header)
     margin_log = [{"agent": ag.id, **e} for ag in agents for e in ag.margin_log]
     if margin_log:
         with open(out_dir / variant / "agent_log.jsonl", "w", encoding="utf-8") as f:
@@ -768,7 +807,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
             "margin_usd_mwh": margin if fl["price_mode"] else None,
             "margin_compare_secs": float(sum(ag.margin_compare_secs for ag in agents)),
             "runtime_s": time.time() - tic,
-            "wall_utc": {"start": wall_start, "end": datetime.now(timezone.utc).isoformat(timespec="seconds")}}
+            "wall_utc": {"start": wall_start, "end": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+            **({"llm": strat.summary()} if strat is not None else {})}
 
 
 def bus_refusals(refused) -> dict:
@@ -1121,7 +1161,8 @@ SIDE_BY_SIDE = ["peak_mw", "peak_vs_selfish_mw", "share_of_m0_ceiling", "unfille
                 ("rebound", "peak_outside_windows_mw"), ("rebound", "peak_moved_outside_windows")]
 
 
-def net_harm(alone: np.ndarray, with_ps: np.ndarray, ids: list[str], roster: list[str], bystanders: int) -> dict:
+def net_harm(alone: np.ndarray, with_ps: np.ndarray, ids: list[str], roster: list[str], bystanders: int,
+             unrounded: bool = False) -> dict:
     """No one is net harmed (PLAN.md section 8). alone: each agent's result acting alone (the selfish run);
     with_ps: its total result with Pearl Street (energy - wear + credits - charges - imbalance). An agent is harmed
     when it falls short by more than max(1% of |alone|, $10). The roster comes from the run header, and the check
@@ -1139,6 +1180,8 @@ def net_harm(alone: np.ndarray, with_ps: np.ndarray, ids: list[str], roster: lis
                        "note": "non-participants keep recorded dispatch, and prices do not react to agents"},
         "harm_from_attackers": None,
         "pass": not missing and not bool(harmed.any()),
+        # staged D98: the signed, unrounded shortfall (acting alone - value), only when the config asks for it
+        **({"shortfall_usd": {i: float(x) for i, x in zip(ids, short)}} if unrounded else {}),
     }
 
 
@@ -1345,6 +1388,8 @@ def main(cfg_path):
             ev["price_mode"]["payout_per_mw_cut_usd"] = (ev["price_mode"]["operator_net_payout_usd"] / cut
                                                          if cut > 1e-6 else None)
         ev["_daily_clipping"] = r["daily_clipping"]
+        if "llm" in r:          # M4: calls, tokens, $ per simulated day, labels (only with llm_strategy)
+            ev["llm"] = r["llm"]
         ev["agents_worse_off_than_selfish"] = int((ev["_agent_value"] < selfish["_agent_value"] - 1e-6).sum())
         alone, with_ps = selfish["_agent_value"], ev["_agent_value"]
         if r["v2"]:           # stored energy left at the end of the slice counts, valued at the slice's mean DA price
@@ -1355,7 +1400,7 @@ def main(cfg_path):
                 alone = alone - selfish_run["SOC_start"] * p_end
                 with_ps = with_ps - r["SOC_start"] * p_end
         ev["net_harm"] = net_harm(alone, with_ps, [ag.id for ag in r["agents"]], r["header"]["roster"],
-                                  len(s.ids) - len(part))
+                                  len(s.ids) - len(part), unrounded=bool(cfg.get("harm_unrounded", False)))
         # D61 (M3 step 7): each agent's value with Pearl Street, the same as net_harm's, for the twin comparison
         ev["agent_value_usd"] = {ag.id: float(v) for ag, v in zip(r["agents"], with_ps)}
         if r["v2"]:

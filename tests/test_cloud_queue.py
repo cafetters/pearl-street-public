@@ -43,6 +43,7 @@ class FakeCloud:
       kill_fail              how many kill calls fail first
       poll_fail_s            status polls fail for this long after a run starts
       foreign                extra live sandboxes owned by someone else: list of (name, metadata)
+      run_log_extra          bytes appended to every run.log (M4: a secret value echoed by a run)
     """
 
     def __init__(self, **kw):
@@ -51,6 +52,8 @@ class FakeCloud:
         self.run_s, self.run_rc, self.setup_head, self.dirty, self.no_summary = {}, {}, {}, {}, set()
         self.create_timeout_after, self.create_429, self.kill_fail, self.poll_fail_s = set(), 0, 0, 0
         self.billing = {"capCents": 2000, "usedCents": 0}
+        self.run_log_extra = b""
+        self.http_env = []        # (cmd, env, background) of every data-plane command sent with an env map
         for k, v in kw.items():
             setattr(self, k, v)
         for name, meta in kw.get("foreign", []):
@@ -170,7 +173,7 @@ class FakeCloud:
         if fname == "setup.log":
             return self.setup_log(s).encode()
         if fname == "run.log":
-            return b"fake run log\nline 2\n"
+            return b"fake run log\nline 2\n" + self.run_log_extra
         if not done:
             return None
         if fname == "metrics.json":
@@ -211,7 +214,11 @@ class FakeCloud:
         if m:
             if (headers or {}).get("X-Maritime-Token") != DP_SECRET or auth:
                 return 401, '{"code":"unauthorized"}'
-            p = self.exec(["sandbox", "exec", m.group(1), "--", *body["cmd"]])
+            if body.get("env"):
+                with self.lock:
+                    self.http_env.append((list(body["cmd"]), dict(body["env"]), bool(body.get("background"))))
+            bg = ["--background"] if body.get("background") else []
+            p = self.exec(["sandbox", "exec", m.group(1), *bg, "--", *body["cmd"]])
             code = _re.search(r"HTTP (\d{3})", p.stderr or "")
             if p.returncode != 0 and code:
                 return int(code.group(1)), p.stderr

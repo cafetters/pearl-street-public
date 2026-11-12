@@ -105,3 +105,74 @@ def test_d1_unknown_setting_is_refused(tmp_path):
     atk, twin = _d1_pair(tmp_path, a_harm_b=11.88, a_harm_c=0.0)
     with pytest.raises(ValueError):
         check(atk, twin, further_below_tol="1pct")
+
+
+# ---- unrounded basis (staged D98; owner, Nov 11 Part C 2e): judge on unrounded shortfalls with a $1e-6 guard --------
+# shortfall = acting alone - value, signed and unrounded, written by sim/run_m1.py under `harm_unrounded: true`.
+
+def _run_u(tmp_path, name, short, value, attackers=()):
+    d = _run(tmp_path, name, {k: round(max(v, 0.0), 2) for k, v in short.items()}, value, attackers=attackers)
+    s = json.loads((d / "summary.json").read_text())
+    s["exchange_by_headroom_mw"]["100"]["net_harm"]["shortfall_usd"] = short
+    (d / "summary.json").write_text(json.dumps(s))
+    return d
+
+
+def test_unrounded_basis_counts_a_sub_cent_newly_below_that_the_cents_basis_misses(tmp_path):
+    # jun02 COM_13 shape: $2.89 above acting alone in the twin, $0.000028 below in the attack cell
+    twin = _run_u(tmp_path, "twin", {"A": -2.89, "B": 0.0, "C": -1.0, "X": 0.0}, {"A": 1, "B": 1, "C": 1, "X": 1})
+    atk = _run_u(tmp_path, "atk", {"A": 2.8e-5, "B": 0.0, "C": -1.0, "X": 9.0}, {"A": 1, "B": 1, "C": 1, "X": 1},
+                 attackers=["X"])
+    assert check(atk, twin)["verdict"] == "PASS"                               # cents: rounds to $0.00
+    r = check(atk, twin, basis="unrounded")
+    assert r["basis"] == "unrounded" and r["guard_usd"] == 1e-6
+    assert r["verdict"] == "FAIL" and list(r["newly_below_acting_alone"]) == ["A"]
+
+
+def test_unrounded_basis_turns_a_rounding_newly_below_into_further_below(tmp_path):
+    # feb26 COM_12 shape: $0.001016 below in the twin (rounds to $0.00), $0.008190 below in the attack (rounds to $0.01)
+    twin = _run_u(tmp_path, "twin", {"A": 0.001016, "B": 0.0, "C": 0.0, "X": 0.0},
+                  {"A": -2570.779296, "B": 1, "C": 1, "X": 1})
+    atk = _run_u(tmp_path, "atk", {"A": 0.008190, "B": 0.0, "C": 0.0, "X": 9.0},
+                 {"A": -2570.786471, "B": 1, "C": 1, "X": 1}, attackers=["X"])
+    assert check(atk, twin)["verdict"] == "FAIL"                               # cents: newly below
+    r = check(atk, twin, basis="unrounded")
+    assert r["verdict"] == "PASS" and r["newly_below_acting_alone"] == {}
+    fb = r["further_below_acting_alone"]["A"]
+    assert fb["further_usd"] == pytest.approx(0.007174) and fb["beyond_tolerance"] is False
+    assert r["zero_tolerance"]["further_below_count"] == 1
+
+
+def test_unrounded_guard_ignores_float_noise(tmp_path):
+    twin = _run_u(tmp_path, "twin", {"A": 0.0, "B": 3e-7, "C": 0.0, "X": 0.0}, {"A": 1, "B": 1, "C": 1, "X": 1})
+    atk = _run_u(tmp_path, "atk", {"A": 9e-7, "B": 3e-7 + 5e-7, "C": 0.0, "X": 9.0}, {"A": 1, "B": 1, "C": 1, "X": 1},
+                 attackers=["X"])
+    r = check(atk, twin, basis="unrounded")
+    assert r["verdict"] == "PASS" and r["newly_below_acting_alone"] == {} and r["further_below_acting_alone"] == {}
+
+
+def test_unrounded_basis_fails_closed_without_the_field(tmp_path):
+    twin = _run(tmp_path, "twin", {"A": 0.0, "B": 0.0, "C": 0.0, "X": 0.0}, {"A": 1, "B": 1, "C": 1, "X": 1})
+    atk = _run_u(tmp_path, "atk", {"A": 0.0, "B": 0.0, "C": 0.0, "X": 9.0}, {"A": 1, "B": 1, "C": 1, "X": 1},
+                 attackers=["X"])
+    with pytest.raises(CheckFailed):
+        check(atk, twin, basis="unrounded")
+
+
+def test_unrounded_shortfall_must_agree_with_the_rounded_harm(tmp_path):
+    twin = _run_u(tmp_path, "twin", {"A": 0.0, "B": 0.0, "C": 0.0, "X": 0.0}, {"A": 1, "B": 1, "C": 1, "X": 1})
+    atk = _run_u(tmp_path, "atk", {"A": 0.5, "B": 0.0, "C": 0.0, "X": 9.0}, {"A": 1, "B": 1, "C": 1, "X": 1},
+                 attackers=["X"])
+    s = json.loads((atk / "summary.json").read_text())
+    s["exchange_by_headroom_mw"]["100"]["net_harm"]["by_agent_usd"]["A"] = 0.0     # inconsistent with 0.5
+    (atk / "summary.json").write_text(json.dumps(s))
+    with pytest.raises(CheckFailed):
+        check(atk, twin, basis="unrounded")
+
+
+def test_unknown_basis_is_refused(tmp_path):
+    twin = _run(tmp_path, "twin", {"A": 0.0, "B": 0.0, "C": 0.0, "X": 0.0}, {"A": 1, "B": 1, "C": 1, "X": 1})
+    atk = _run(tmp_path, "atk", {"A": 0.0, "B": 0.0, "C": 0.0, "X": 9.0}, {"A": 1, "B": 1, "C": 1, "X": 1},
+               attackers=["X"])
+    with pytest.raises(ValueError):
+        check(atk, twin, basis="rounded_up")

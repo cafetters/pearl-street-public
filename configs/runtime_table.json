@@ -1,0 +1,7 @@
+{
+ "note": "Measured run times for the LLM cost estimator (bench/llm_cost_estimate.py). Code-only arm C runs; an LLM run adds call latency (measured at the pilot). Add entries from real runs only.",
+ "entries": [
+  {"days": 2, "agents": 80, "runtime_s": 800, "peak_mem_mb": null,
+   "source": "docs/plans/d61v2_attacks_check.md (Nov 8): $5 run median about 800 s at concurrency 10 (v2r-main, 7 runs), 666 s at concurrency 6 (v2r-main2, 37 runs); Maritime Small; peak memory not recorded there"}
+ ]
+}
