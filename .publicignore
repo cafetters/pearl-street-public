@@ -1,0 +1,13 @@
+# Paths left out of the public snapshot (scripts/publish_public.py).
+# One pattern per line, relative to the repo root. A trailing / excludes a
+# directory and everything under it; * and ? are globs.
+docs/PLAN.md
+docs/overnight/
+docs/plans/m1b_questions.md
+docs/plans/m1b.md
+CLAUDE.md
+.claude/
+# Its absolute data_dir paths are the point of the test, so they can't be made relative.
+tests/test_d61_check.py
+# Private-only notes (owner, Nov 11).
+docs/private/
