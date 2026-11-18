@@ -12,13 +12,14 @@
 |---|---|
 | Cold start run 1 (docs 0.1) | The client registered and subscribed, then waited for a nonzero price before nominating. Prices need every agent's nomination, so all 80 agents saw $0. Verdict "tie, $0.00" (correct). **Check 2 failed** (no binding nomination). |
 | Improvement 2 | SKILL.md states that prices need your nomination; `advance` flags calls you haven't nominated. Regression test added. |
-| Cold start run 2 (docs 0.2) | **All 5 pre-registered checks pass.** Participating beat acting alone by **+$92.42** (peak settlement, $0 imbalance). The client's figures match the trace to the cent. |
+| Cold start run 2 (docs 0.2) | **All 5 pre-registered checks pass.** On the exchange settlement, which is what the checks judge, participating beat acting alone by **+$92.42** (peak settlement, $0 imbalance). The client's figures match the trace to the cent. |
+| Cold start run 2, full value (computed after the run, not pre-registered) | Counted the way run_m1 values an agent (real-time energy, wear, settlement, end state of charge), PVB_15 ended **$251.42 *worse* than acting alone**. The settlement gain was outweighed by lost energy arbitrage and a battery left nearly empty at the end. The client warned that its verdict covered the settlement only. |
 | Silent-agent finding | One agent that doesn't nominate freezes zone pricing at $0 for all 80 agents (exchange rule with D78 off). A control with the reference agent priced up to $18/MWh. |
-| Fleet peak, Jan 12–13 (80 batteries) | Acting alone (selfish run): **2,500.3 MW**. M0 LP ceiling: **2,314.1 MW**. **Cold run 2: 2,320.0 MW**, a cut of 180.3 MW, which is **96.8% of the acting-alone-to-ceiling gap** and 95.4% of the M0 ceiling's cut from recorded. **Cold run 1: 2,500.3 MW**, a 0.0 MW cut and 0% of the gap: the silent agent erased the whole market's effect. |
+| Fleet peak, Jan 12–13 (80 batteries; the market's result, not the outside agent's alone) | Acting alone (selfish run): **2,500.3 MW**. M0 LP ceiling: **2,314.1 MW**. **Cold run 2: 2,320.0 MW**, a cut of 180.3 MW, which is **96.8% of the acting-alone-to-ceiling gap** and 95.4% of the M0 ceiling's cut from recorded. **Cold run 1: 2,500.3 MW**, a 0.0 MW cut and 0% of the gap: the silent agent erased the whole market's effect. |
 | Boundary: one agent nominates 10× its battery's power | Accepted by the exchange; that agent paid **$281,453** imbalance (its value fell $281,485). |
 | Did that hurt the other agents? | No honest agent fell below acting alone (D88 rule, zero tolerance: 0 of 4). Their values moved by −$0.43 to +$0.27, and their peak settlements by less than $0.01. |
 | What improved (boundary) | Before: the over-limit nomination was accepted with `ok: true` and the sender learned of it only at settlement. Now: `nominate` returns an `exceeds_asset_power` warning at send time. A regression test covers it. |
-| What remains unproven | Hosted, authenticated access (local stdio only). A cold start by another builder's agent (both runs were self-run, same model family). Repeatability: one run per docs version, one window. Whether participating beats acting alone once the energy market is counted. Over-limit and silent-agent effects at scale. The exchange-side fixes (only interface and docs changed). |
+| What remains unproven | Hosted, authenticated access (local stdio only). A cold start by another builder's agent (both runs were self-run, same model family). Repeatability: one run per docs version, one window. That an outside agent can beat acting alone on full value: in run 2 it didn't (−$251.42), because the interface gives it no real-time prices and no end-of-window energy value. Over-limit and silent-agent effects at scale. The exchange-side fixes (only interface and docs changed). |
 
 ## 1. The interface
 
@@ -191,6 +192,24 @@ The run config lists the outside agent under the simulator's `attackers` hook wi
 | 5. Verdict matches the sign of S (YES) | PASS |
 | **Overall** | **PASS** |
 
+**Full value against acting alone.** This was computed after the run and is reported, not judged. Check 5 stays judged against S as pre-registered. The computation is `scripts/hw9_agent_value.py`, using run_m1 `evaluate()`'s definition; "acting alone" is a selfish run of the same config.
+
+| PVB_15, synthetic $ | Acting alone | Cold run 2 | Difference |
+|---|---|---|---|
+| Energy at real-time prices on metered site net | 1,337.22 | 1,094.67 | −242.55 |
+| Wear (discharge) | −82.42 | −96.00 | −13.58 |
+| Peak settlement − imbalance | 0.00 | +92.42 | +92.42 |
+| End state of charge at the mean day-ahead price | 116.66 (3,394 kWh) | 28.95 (842 kWh) | −87.71 |
+| **Total** | **1,371.46** | **1,120.04** | **−251.42** |
+
+**Reading.**
+
+- The agent earned the peak payment by discharging in the evening peak.
+- It gave up the acting-alone plan's energy arbitrage, and it ended the window with a nearly empty battery. The acting-alone planner holds the starting state of charge.
+- The interface didn't give it what it needed to weigh this: real-time prices, or a value for energy left at the end. It said so itself ("This doesn't show whether the battery did better overall").
+- This is an **interface limitation**: `get_settlement` reports settlement only. The next improvement is to report the full statement against the acting-alone reference.
+- Cold run 1 was exactly equal to acting alone on full value ($0.00), as expected from a battery that never left its acting-alone plan.
+
 **Fleet outcome (system net load, run_m1 definitions; computed by `scripts/hw9_viewer_summary.py` from each trace plus one selfish run of the same config; not a run_m1 evaluation):**
 
 | | Peak (MW) | Cut vs acting alone | Share of acting-alone-to-ceiling gap | Share of the M0 ceiling's cut from recorded |
@@ -199,6 +218,8 @@ The run config lists the outside agent under the simulator's `attackers` hook wi
 | M0 LP ceiling (`runs/m0_jan12`) | 2,314.1 | 186.2 | 100% | 100% |
 | **Cold run 2** (outside agent with docs 0.2, plus 79 reference agents) | **2,320.0** | **180.3** | **96.8%** | 95.4% |
 | Cold run 1 (outside agent silent, plus 79 reference agents) | 2,500.3 | 0.0 | 0% | −46.6% (above recorded) |
+
+**Attribution.** Cold run 2's fleet peak, 2,320.02 MW, equals the earlier all-reference jan12 run (`h2h_c_jan12_h100_1p`: 2,320.02 MW) to within 0.001 MW. The 180 MW cut is the market's work: 79 reference agents plus the outside agent's participation. The outside agent's contribution was to take part rather than block the market. The 180 MW is not credited to it.
 
 Trace viewers: `python -m exchange.trace.viewer runs/hw9_cold2_jan12` (and `runs/hw9_cold_jan12`), after `scripts/hw9_viewer_summary.py` writes each folder's `summary.json`.
 
