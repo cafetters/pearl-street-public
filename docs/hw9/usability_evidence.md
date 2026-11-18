@@ -14,6 +14,7 @@
 | Improvement 2 | SKILL.md states that prices need your nomination; `advance` flags calls you haven't nominated. Regression test added. |
 | Cold start run 2 (docs 0.2) | **All 5 pre-registered checks pass.** Participating beat acting alone by **+$92.42** (peak settlement, $0 imbalance). The client's figures match the trace to the cent. |
 | Silent-agent finding | One agent that doesn't nominate freezes zone pricing at $0 for all 80 agents (exchange rule with D78 off). A control with the reference agent priced up to $18/MWh. |
+| Fleet peak, Jan 12–13 (80 batteries) | Acting alone (selfish run): **2,500.3 MW**. M0 LP ceiling: **2,314.1 MW**. **Cold run 2: 2,320.0 MW**, a cut of 180.3 MW, which is **96.8% of the acting-alone-to-ceiling gap** and 95.4% of the M0 ceiling's cut from recorded. **Cold run 1: 2,500.3 MW**, a 0.0 MW cut and 0% of the gap: the silent agent erased the whole market's effect. |
 | Boundary: one agent nominates 10× its battery's power | Accepted by the exchange; that agent paid **$281,453** imbalance (its value fell $281,485). |
 | Did that hurt the other agents? | No honest agent fell below acting alone (D88 rule, zero tolerance: 0 of 4). Their values moved by −$0.43 to +$0.27, and their peak settlements by less than $0.01. |
 | What improved (boundary) | Before: the over-limit nomination was accepted with `ok: true` and the sender learned of it only at settlement. Now: `nominate` returns an `exceeds_asset_power` warning at send time. A regression test covers it. |
@@ -189,6 +190,17 @@ The run config lists the outside agent under the simulator's `attackers` hook wi
 | 4. Final numbers match the trace: S = $92.42 (Σ `peak_settle.net_usd` $92.4192 − Σ imbalance $0) | PASS. Every settlement figure matched within $0.005: refund $0.91 vs $0.9138; charge −$91.51 vs −$91.5054. Its $83 and $29 are its own counterfactual estimates, not settlement figures. |
 | 5. Verdict matches the sign of S (YES) | PASS |
 | **Overall** | **PASS** |
+
+**Fleet outcome (system net load, run_m1 definitions; computed by `scripts/hw9_viewer_summary.py` from each trace plus one selfish run of the same config; not a run_m1 evaluation):**
+
+| | Peak (MW) | Cut vs acting alone | Share of acting-alone-to-ceiling gap | Share of the M0 ceiling's cut from recorded |
+|---|---|---|---|---|
+| Acting alone (selfish run) | 2,500.3 | — | — | — |
+| M0 LP ceiling (`runs/m0_jan12`) | 2,314.1 | 186.2 | 100% | 100% |
+| **Cold run 2** (outside agent with docs 0.2, plus 79 reference agents) | **2,320.0** | **180.3** | **96.8%** | 95.4% |
+| Cold run 1 (outside agent silent, plus 79 reference agents) | 2,500.3 | 0.0 | 0% | −46.6% (above recorded) |
+
+Trace viewers: `python -m exchange.trace.viewer runs/hw9_cold2_jan12` (and `runs/hw9_cold_jan12`), after `scripts/hw9_viewer_summary.py` writes each folder's `summary.json`.
 
 **Friction the client hit in run 2** (seen in the log; not fixed tonight):
 
