@@ -63,12 +63,16 @@ REQUIRED = {
     "declare_availability": ("asset_id", "date", "power_kw", "reserve_kwh", "planned_outage"),
     "declare_outage": ("asset_id", "window"),
     "delivery_record": ("assets", "this_run", "record"),
+    # M2c (D99, Leaning): the arm C zone product (exchange to agent)
+    "zone_rows": ("rows",),
+    "zone_price": ("element", "call_id", "window", "lambda_usd_mwh", "direction", "shift_kw", "round", "final"),
+    "zone_settle": ("window", "by_element_usd", "net_usd"),
 }
 
 # Sent only by the exchange
 EXCHANGE_TYPES = {"award", "suspend", "settle", "reject", "nomination_aggregate", "imbalance", "clearing_report",
                   "rebound", "need_cleared", "gate_prices", "cap_rebase", "zone_room", "peak_price",
-                  "peak_settle", "guarantee_accrual", "delivery_record"}
+                  "peak_settle", "guarantee_accrual", "delivery_record", "zone_rows", "zone_price", "zone_settle"}
 
 REJECT_CODES = ("outside_mandate", "over_demonstrated_limit", "already_sold", "after_gate_closure",
                 "not_registered", "unauthorized_sender", "bad_message",

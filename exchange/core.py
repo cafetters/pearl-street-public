@@ -14,6 +14,7 @@ from exchange.clearing import clear, clear_with
 from exchange.imbalance import band_kw, imbalance
 from exchange import guarantee as G
 from exchange import price_mode as PM
+from exchange import zones as ZN
 from exchange import records as REC
 from exchange.settlement import settle_award
 
@@ -85,7 +86,9 @@ class Exchange:
                  guarantee_wear_usd_mwh: float = 0.0, attested_owners: bool = True, delivery_record: bool = False,
                  da_publish_hour_local: int = 12, max_outage_days_per_season: int | None = None,
                  refusal_notice: bool = False, settlement_rule: str = "today", silent_reference: bool = False,
-                 declared_reference: bool = False, settle_from_utc: str | None = None):
+                 declared_reference: bool = False, settle_from_utc: str | None = None,
+                 grid_zones: list | None = None, zone_alpha_scale: float = 1.0, zone_tol_excess_kw: float = 1.0,
+                 zone_adapt_tau: float = 0.0):
         """require_nominations: offers clear only for agents whose nominations cover the need's window (D32).
         scarcity_usd_mwh: the zone's scarcity price for imbalance; None turns imbalance off (M1).
         M2a (D34, D37), all off by default: prep_clearing (an offer clears only if its declared preparation keeps
@@ -318,6 +321,26 @@ class Exchange:
         self.run_id, self.operator_id, self.metering_id, self.clock_id = run_id, operator_id, metering_id, clock_id
         self.step = timedelta(minutes=step_minutes)
         self.step_h = step_minutes / 60.0
+        # M2c (D99, Leaning): the arm C zone product. grid_zones: [{key, rows {asset: PTDF}, limit_mw,
+        # base_mw {t_utc: MW}, cap_usd_mwh}] built by sim/ from the grid; absent means no zone code runs at all.
+        self.zonebook = None
+        self.zone_settled: dict[str, dict[str, tuple[float, float, str]]] = {}   # t -> key -> (lam, dir, call_id)
+        self.zone_alpha_scale = float(zone_alpha_scale)
+        self.zone_tol = float(zone_tol_excess_kw)
+        if grid_zones:
+            if not (price_mode and settlement_reference == "selfish_1p"):
+                raise ValueError("grid_zones (M2c, D99) needs price_mode and settlement_reference selfish_1p")
+            self.zonebook = ZN.ZoneBook([ZN.Element(key=z["key"], rows=dict(z["rows"]), limit_mw=float(z["limit_mw"]),
+                                                    base_mw=dict(z["base_mw"]), cap_usd_mwh=float(z["cap_usd_mwh"]))
+                                         for z in grid_zones], step_h=self.step_h, alpha=0.0,
+                                        adapt_tau=float(zone_adapt_tau) if zone_adapt_tau else None)
+            # the full constructor input, so a trace replays (exchange/trace/replay.py builds Exchange(**config))
+            self.config["grid_zones"] = [{"key": z["key"], "rows": {a: float(v) for a, v in z["rows"].items()},
+                                          "limit_mw": float(z["limit_mw"]),
+                                          "base_mw": {t: float(v) for t, v in z["base_mw"].items()},
+                                          "cap_usd_mwh": float(z["cap_usd_mwh"])} for z in grid_zones]
+            self.config.update({"zone_alpha_scale": self.zone_alpha_scale, "zone_tol_excess_kw": self.zone_tol,
+                                "zone_adapt_tau": float(zone_adapt_tau) if zone_adapt_tau else 0.0})
         self.agents: dict[str, dict] = {}
         self.asset_owner: dict[str, str] = {}
         self.subs: dict[str, list[str]] = {z: [] for z in zones}
@@ -574,6 +597,12 @@ class Exchange:
             self.asset_owner[x] = aid
             self.unheld_at_gate[x] = (self.unheld_at_gate.get(x, frozenset())
                                       | (closed - self._closed_at_release.get(x, frozenset())))
+        if self.zonebook is not None:
+            rows = {x: {k: e.rows[x] for k, e in self.zonebook.elements.items() if x in e.rows}
+                    for x in self.agents[aid]["assets"]}
+            rows = {x: r for x, r in rows.items() if r}
+            if rows:
+                return [self._msg("zone_rows", aid, msg["t_utc"], {"rows": rows})]
         return []
 
     def _on_subscribe(self, msg):
@@ -1136,6 +1165,8 @@ class Exchange:
             self._void_declarations()                    # D81: before either settlement rule reads the references
         if self.price_mode and final and not self.peak_done:
             out += self._peak_settle_max(now) if self.settlement_rule == "max_first_call" else self._peak_settle(now)
+            if self.zonebook is not None:
+                out += self._zone_settle(now)
         if self.delivery_record and final and not self.record_done:
             out += self._delivery_record(now)
         if self.guarantee and final and not self.guarantee_done:
@@ -1430,11 +1461,21 @@ class Exchange:
         row = {"call_id": call["call_id"], "binding": call["binding"], "round": r, "t_utc": now,
                "rho": self.rho, "alpha": self.alpha}
         final = r >= self.price_rounds
+        zx, zinj = None, None
+        if self.zonebook is not None:                   # M2c: element excess at the agents' latest nominations
+            zinj = self._zone_injections(call)
+            zv = self.zonebook.violations(call["_steps"], zinj)
+            zx = {k: max(v.values(), default=0.0) * 1000.0 for k, v in zv.items()}
+            row["zone_max_excess_kw"] = zx
         if g["prev"] is not None:                       # measure the agents' response to the last broadcast
             m = self._measure(steps, agg, target, loads, g["prev"])
             row.update(m)
             g["hist"].append((m["max_excess_kw"], m["dual_res_usd_mwh"]))
-            if PM.converged(g["hist"], tol_e, tol_s, streak):
+            zone_ok = True
+            if zx is not None:                          # M2c: zones converge on their own, tight tolerance
+                g.setdefault("zhist", []).append(max(zx.values(), default=0.0))
+                zone_ok = len(g["zhist"]) >= streak and all(v <= self.zone_tol for v in g["zhist"][-streak:])
+            if PM.converged(g["hist"], tol_e, tol_s, streak) and zone_ok:
                 final = True
                 row["converged"] = True
             else:
@@ -1453,6 +1494,15 @@ class Exchange:
             shift = PM.centre_shift(new, old, self.alpha, n)
         for t, v in zip(steps, new):
             self.pi[t] = v
+        if self.zonebook is not None:
+            if not row.get("converged"):
+                self.zonebook.set_rho(self.rho * self.zone_alpha_scale)   # alpha_k = rho / ||row_k||^2 (ADMM)
+                self.zonebook.update(call["_steps"], zinj)
+            else:
+                for k in self.zonebook.elements:        # converged: no step, so no centre shift
+                    self.zonebook.dlam[k] = {}
+            if final and not row.get("converged"):
+                row["round_limit"] = True               # defined: the last prices sent are the prices in force
         g["prev"], g["round"], g["done"] = loads, r, final
         if final:
             self.final_calls.add(call["call_id"])
@@ -1466,7 +1516,80 @@ class Exchange:
         subs = self.subs[call["zone"]]
         payload = {"zone": call["zone"], "call_id": call["call_id"], "window": call["window"], "price_usd_mwh": price,
                    "rho": self.rho, "shift_kw": shift_all, "round": r, "final": final}
-        return [self._msg("peak_price", list(subs), now, payload)] if subs else []
+        out = [self._msg("peak_price", list(subs), now, payload)] if subs else []
+        if self.zonebook is not None:
+            out += self._zone_prices(call, now, r, final)
+        return out
+
+    # ---- M2c zone product (D99) ----
+    def _zone_injections(self, call) -> dict:
+        """asset -> t -> site net kW (+ = export) from each agent's latest nomination (or D78 reference). One asset
+        per agent in zone runs: fails closed otherwise."""
+        out = {}
+        for aid, a in self.agents.items():
+            if aid in self.inactive:
+                continue
+            members = [x for x in a["assets"] if any(x in e.rows for e in self.zonebook.elements.values())]
+            if not members:
+                continue
+            if len(a["assets"]) != 1:
+                raise RuntimeError(f"M2c: {aid} has {len(a['assets'])} assets; zone runs need one asset per agent")
+            out[members[0]] = {t: (self._nom_or_ref(aid, call["call_id"], t) or 0.0) for t in call["_steps"]}
+        return out
+
+    def _zone_prices(self, call, now, r, final) -> list:
+        K = self.step_h / 1000.0
+        out = []
+        for k, e in self.zonebook.elements.items():
+            to = sorted({self.asset_owner[x] for x in e.rows if x in self.asset_owner})
+            if not to:
+                continue
+            lam = [round(self.zonebook.lam[k].get(t, 0.0) / K, 6) for t in call["_steps"]]
+            dirs = [self.zonebook.direction(k, t) for t in call["_steps"]]
+            unit = [round(self.zonebook.shift_unit_kw(k, t), 6) for t in call["_steps"]]
+            out.append(self._msg("zone_price", to, now, {"element": k, "call_id": call["call_id"],
+                                                         "window": call["window"], "lambda_usd_mwh": lam,
+                                                         "direction": dirs, "shift_kw": unit, "round": r,
+                                                         "final": final}))
+        return out
+
+    def _zone_settle(self, now) -> list:
+        """Closing tick: D56's 1p on every zone component, per agent: component x (reference load - metered load)
+        at each step a binding call settled. A schedule equal to its reference settles exactly 0; an agent with no
+        asset in any zone gets no message (never charged). A missing reference fails closed, as in _peak_settle."""
+        if not self.zone_settled:
+            return []
+        steps = sorted(t for t in self.zone_settled if _from_ok(self, t))
+        if not steps:
+            return []
+        window = {"start_utc": steps[0], "end_utc": fmt_t(parse_t(steps[-1]) + self.step)}
+        out = []
+        for aid, a in self.agents.items():
+            by_el: dict[str, float] = {}
+            for x in a["assets"]:
+                for k, e in self.zonebook.elements.items():
+                    if x not in e.rows:
+                        continue
+                    total = 0.0
+                    for t in steps:
+                        if not self._holds(aid, t):
+                            continue
+                        lam, d, cid = self.zone_settled[t][k]
+                        c = lam * (-d * e.rows[x])
+                        if c == 0.0:
+                            continue
+                        ref = self.call_reference.get(cid, {}).get(x, {}).get(t)
+                        if ref is None:
+                            if cid in self.unheld_at_gate.get(x, frozenset()):
+                                continue
+                            raise RuntimeError(f"D56: no selfish_reference for {x} on {cid} at {t} (zone {k})")
+                        met = self.net_meter.get(x, {}).get(t, 0.0)
+                        total += c * ((-ref) - (-met))
+                    by_el[k] = by_el.get(k, 0.0) + total
+            if by_el:
+                out.append(self._msg("zone_settle", aid, now, {"window": window, "by_element_usd": by_el,
+                                                               "net_usd": sum(by_el.values())}))
+        return out
 
     def _close_price_gate(self, call, now):
         """At a call's deadline: log the agents' final response to its price rounds; at a binding call, settle the
@@ -1481,6 +1604,10 @@ class Exchange:
             K = self.step_h / 1000.0
             for t in call["_steps"]:
                 self.peak_settled[t] = (self.pi.get(t, 0.0) / K, call["call_id"])
+            if self.zonebook is not None:
+                for t in call["_steps"]:
+                    self.zone_settled[t] = {k: (self.zonebook.lam[k].get(t, 0.0), self.zonebook.direction(k, t),
+                                                call["call_id"]) for k in self.zonebook.elements}
             if self.settlement_rule == "max_first_call":
                 self.call_price[call["call_id"]] = {t: self.pi.get(t, 0.0) / K for t in call["_steps"]}
                 for t in call["_steps"]:

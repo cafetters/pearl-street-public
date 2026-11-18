@@ -52,6 +52,10 @@ GOOD = {
                              "planned_outage": False},
     "declare_outage": {"asset_id": "a", "window": WIN},
     "delivery_record": {"assets": ["a"], "this_run": {}, "record": {}},
+    "zone_rows": {"rows": {"a": {"z1": -1.0}}},
+    "zone_price": {"element": "z1", "call_id": "c1", "window": WIN, "lambda_usd_mwh": [1.0, 0.0],
+                   "direction": [1.0, 1.0], "shift_kw": [0.0, 0.0], "round": 1, "final": False},
+    "zone_settle": {"window": WIN, "by_element_usd": {"z1": 0.0}, "net_usd": 0.0},
 }
 
 

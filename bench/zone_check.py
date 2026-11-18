@@ -12,7 +12,6 @@ on the dev-slice hours.
 Run:  python -m bench.zone_check configs/dev_2day.yaml      -> runs/m0/
 """
 import json, sys
-from collections import deque
 
 import numpy as np
 import pandas as pd
@@ -22,78 +21,10 @@ from sim.data import REPO, Grid, load_config, load_grid, load_powerflow, load_sl
 
 OUT = REPO / "runs" / "m0"
 ELEMENTS = ["l43", "l26", "t35", "t38", "t40"]
-PTDF_MIN = 0.05
-LIMIT_PCT = 90.0           # D10 operating limit
 CORR_MIN = 0.9             # PTDF validation flag
-BASE_MVA = 100.0
-TZ = "America/Chicago"
-
-
-def branches(g: Grid) -> pd.DataFrame:
-    """Lines and trafos as one table: key, from, to, x (p.u. on BASE_MVA), rating (MVA)."""
-    vn = g.buses.set_index("bus").vn_kv
-    ln = g.lines
-    x_line = ln.x_ohm_per_km * ln.length_km / ln.parallel / (vn.loc[ln.from_bus].to_numpy() ** 2 / BASE_MVA)
-    tr = g.trafos
-    x_tr = np.sqrt(tr.vk_percent ** 2 - tr.vkr_percent ** 2) / 100 * BASE_MVA / tr.sn_mva / tr.parallel
-    return pd.concat([
-        pd.DataFrame({"key": "l" + ln.line.astype(str), "frm": ln.from_bus, "to": ln.to_bus,
-                      "x": x_line.to_numpy(), "rating_mva": ln.rating_mva, "kv": vn.loc[ln.from_bus].to_numpy()}),
-        pd.DataFrame({"key": "t" + tr.trafo.astype(str), "frm": tr.hv_bus, "to": tr.lv_bus,
-                      "x": x_tr.to_numpy(), "rating_mva": tr.sn_mva, "kv": vn.loc[tr.hv_bus].to_numpy()}),
-    ], ignore_index=True)
-
-
-def ptdf(br: pd.DataFrame, buses: np.ndarray, slack: int) -> np.ndarray:
-    """(branches x buses): MW on each branch (from -> to) per MW injected at a bus and withdrawn at slack."""
-    pos = {b: i for i, b in enumerate(buses)}
-    A = np.zeros((len(br), len(buses)))
-    A[np.arange(len(br)), [pos[b] for b in br.frm]] = 1
-    A[np.arange(len(br)), [pos[b] for b in br.to]] = -1
-    bdiag = 1 / br.x.to_numpy()
-    Bbus = A.T @ (bdiag[:, None] * A)
-    keep = np.array([b != slack for b in buses])
-    X = np.zeros((len(buses), len(buses)))
-    X[np.ix_(keep, keep)] = np.linalg.inv(Bbus[np.ix_(keep, keep)])
-    return (bdiag[:, None] * A) @ X
-
-
-def cut_off(br: pd.DataFrame, buses: np.ndarray, slack: int, skip: str) -> list[int]:
-    """Buses no longer connected to the slack bus once branch `skip` is removed."""
-    adj = {b: [] for b in buses}
-    for k, f, t in zip(br.key, br.frm, br.to):
-        if k != skip:
-            adj[f].append(t)
-            adj[t].append(f)
-    seen, q = {slack}, deque([slack])
-    while q:
-        for v in adj[q.popleft()]:
-            if v not in seen:
-                seen.add(v)
-                q.append(v)
-    return sorted(int(b) for b in set(buses) - seen)
-
-
-def injections(g: Grid, buses: np.ndarray, pnet_kw: np.ndarray, agent_bus: np.ndarray, scale: np.ndarray):
-    """Bus injections, MW, (hours x buses): agents' p_net + gens at p_mw - background loads x bg_load_scale.
-    The slack bus takes the balance (its PTDF column is zero)."""
-    pos = {b: i for i, b in enumerate(buses)}
-    load = np.zeros(len(buses)); gen = np.zeros(len(buses)); ag = np.zeros((len(buses), len(agent_bus)))
-    np.add.at(load, [pos[b] for b in g.loads.bus], g.loads.p_mw.to_numpy())
-    np.add.at(gen, [pos[b] for b in g.gens.bus], g.gens.p_mw.to_numpy())
-    ag[[pos[b] for b in agent_bus], np.arange(len(agent_bus))] = 1
-    return gen[None, :] - scale[:, None] * load[None, :] + (pnet_kw.T / 1e3) @ ag.T
-
-
-def binding(series: pd.Series) -> dict:
-    local = series.index.tz_convert(TZ)
-    over = series >= LIMIT_PCT
-    return {
-        "max_pct": float(series.max()), "max_at_utc": str(series.idxmax()),
-        "hours_ge_90": int(over.sum()), "hours_ge_100": int((series >= 100).sum()),
-        "hours_ge_90_by_month_central": {int(k): int(v) for k, v in over.groupby(local.month).sum().items() if v},
-        "hours_ge_90_by_hour_central": {int(k): int(v) for k, v in over.groupby(local.hour).sum().items() if v},
-    }
+# Moved to sim/grid.py for M2c (Nov 18); re-exported here so M0 and bench/stress_sweep.py reproduce unchanged.
+from sim.grid import (BASE_MVA, LIMIT_PCT, PTDF_MIN, TZ, binding, branches, cut_off,  # noqa: E402,F401
+                      injections, ptdf)
 
 
 def main(cfg_path):

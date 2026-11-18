@@ -107,6 +107,15 @@ class BatteryAgent:
         self.round = None                             # the price round to answer: call, rho, centre shift
         self.prox_eps = prox_eps_usd_mwh * dt_h / 1000.0
         self.peak_net_usd = 0.0
+        # M2c (D99, Leaning): this asset's PTDF rows, the latest lambda ($/MWh) and flow direction per element, and
+        # the zone component on load they give (all zero, and unused, without zone rows)
+        self.zone_rows: dict[str, float] = {}
+        self.zone_lam: dict[str, np.ndarray] = {}
+        self.zone_dir: dict[str, np.ndarray] = {}
+        self.zone_add = np.zeros(self.T)
+        self.zone_unit: dict[str, np.ndarray] = {}
+        self.zone_shift = np.zeros(self.T)            # kW less load at the prox centre from the zones' last step
+        self.zone_net_usd = 0.0
         self.margin = float(peak_response_margin_usd_mwh)
         self.posture = "cautious" if self.margin > 0 else "normal"     # label only; the number is the config's m
         self._anchors: dict[bytes, np.ndarray] = {}   # selfish anchor per solve inputs (one LP per gate, not round)
@@ -228,6 +237,26 @@ class BatteryAgent:
                 self.dirty = True
             elif typ == "peak_settle":
                 self.peak_net_usd += p["net_usd"]
+            elif typ == "zone_rows":
+                self.zone_rows = {k: float(v) for k, v in p["rows"].get(self.asset_id, {}).items()}
+            elif typ == "zone_price":
+                k_ = p["element"]
+                if k_ in self.zone_rows:
+                    mask = self._mask(p["window"])
+                    lam = self.zone_lam.setdefault(k_, np.zeros(self.T))
+                    dr = self.zone_dir.setdefault(k_, np.zeros(self.T))
+                    lam[mask] = np.asarray(p["lambda_usd_mwh"], float)[:mask.sum()]
+                    dr[mask] = np.asarray(p["direction"], float)[:mask.sum()]
+                    un = self.zone_unit.setdefault(k_, np.zeros(self.T))
+                    un[:] = 0.0
+                    un[mask] = np.asarray(p["shift_kw"], float)[:mask.sum()]
+                    self.zone_add = sum(self.zone_lam[e] * (-self.zone_dir[e] * r) for e, r in self.zone_rows.items()
+                                        if e in self.zone_lam)
+                    self.zone_shift = sum(self.zone_unit[e] * (-self.zone_dir[e] * r)
+                                          for e, r in self.zone_rows.items() if e in self.zone_unit)
+                    self.dirty = True
+            elif typ == "zone_settle":
+                self.zone_net_usd += p["net_usd"]
             elif typ == "zone_room":
                 pos = np.flatnonzero(self._mask(p["window"]))
                 vals = np.array([np.nan if v is None else v for v in p["room_kw"]], float)[:len(pos)]
@@ -283,8 +312,9 @@ class BatteryAgent:
             return []
         # after an earlier round the plan already starts at k + 1, from the SOC it saved
         s_next = self.plan_s0 if self.plan.k0 == k + 1 else float(self.plan.s[k - self.plan.k0])
+        zshift = self.zone_shift if self.zone_rows else 0.0          # M2c: the zones' ADMM centre shift
         centre = np.where(c["mask"] & ~np.isnan(rnd["shift"]) & ~np.isnan(self.latest_sent),
-                          self.base_export - self.latest_sent - rnd["shift"], np.nan)
+                          self.base_export - self.latest_sent - rnd["shift"] - zshift, np.nan)
         self._final_round = bool(rnd.get("final"))       # D58 log: the final round's plan is the one nominated
         self.plan = self._solve(k + 1, s_next, price, self.commit, prox=(rnd["rho"], centre[k + 1:], self.prox_eps))
         self._final_round = False
@@ -346,13 +376,20 @@ class BatteryAgent:
         args = (self.b, k, soc, price[k:], self.avail[k:], self.base_export[k:], commit[k:], self.dt_h, self.wear,
                 None if q_mask is None else q_mask[k:], nom, band, self.imb_price,
                 None if ref_net is None else ref_net[k:], cap, band, self.cap_price)
-        peak = self.peak[k:] if self.price_mode else None
+        peak = self.effective_peak()[k:] if self.price_mode else None
         if not (self.margin > 0 and self.participate and q_mask is None and peak is not None and peak.any()):
             return solve(*args, peak=peak, prox=prox)
         anchor = self._anchor(args)
         plan = solve(*args, peak=peak, prox=prox, anchor=(anchor, self.margin))
         self._log_margin(k, args, peak, prox, anchor, plan)
         return plan
+
+    def effective_peak(self) -> np.ndarray:
+        """The peak price plus this asset's zone component (M2c), $/MWh per step. Without zone rows it is the peak
+        array itself, so flag-off runs are unchanged."""
+        if not self.zone_rows:
+            return self.peak
+        return self.peak + self.zone_add
 
     def _anchor(self, args) -> np.ndarray:
         """D58: site net of the agent's own selfish plan for these inputs (no peak price, no prox), cached on them."""

@@ -80,7 +80,7 @@ def objective(B, x, z, peak):
     return float(1e-6 * lp + z[0]) if peak else float(lp + z.sum())
 
 
-def solve(B, peak=False, cap_kw=None, dual=True, peak_from=0, pre_cap_kw=None):
+def solve(B, peak=False, cap_kw=None, dual=True, peak_from=0, pre_cap_kw=None, network=None):
     """One LP over all agents and the whole slice. dual=False runs plain build() with scipy's linprog.
     peak_from, pre_cap_kw: D57's controllable ceiling (bench.bench.build); the defaults give the LP as before."""
     orig = B.linprog
@@ -89,10 +89,21 @@ def solve(B, peak=False, cap_kw=None, dual=True, peak_from=0, pre_cap_kw=None):
     tic = time.time()
     try:
         kw = {} if (not peak_from and pre_cap_kw is None) else {"peak_from": peak_from, "pre_cap_kw": pre_cap_kw}
+        if network is not None:
+            kw["network"] = network
         x, z = B.build(list(range(B.N)), 0, B.T, B.S0, B.S0, cap_kw=cap_kw, peak=peak, **kw)
     finally:
         B.linprog = orig
+    ns = None
+    if network is not None:                       # M2c: the K x T network slacks follow the usual extras
+        nk = len(network["g"])
+        ns, z = z[len(z) - nk * B.T:].reshape(nk, B.T), z[:len(z) - nk * B.T]
     out = {"x": x, "z": z, "secs": time.time() - tic, "obj_recomputed": objective(B, x, z, peak)}
+    if ns is not None:
+        keys = network.get("keys") or [f"k{i}" for i in range(len(ns))]
+        out["network_slack_mw"] = ns.max(axis=1)
+        out["network_slack_by_element_mw"] = {k: float(v) for k, v in zip(keys, ns.max(axis=1))}
+        out["network_slack_mw_steps"] = float(ns.sum())
     if dual:
         out["obj"] = float(cap.last.fun)
         if peak_from:                                     # D57: coupling rows only from peak_from; zeros before
@@ -354,10 +365,106 @@ def main_controllable(cfg_path):
     return result
 
 
+NETWORK_MONITOR_PCT = 80.0     # M2c: elements whose baseline AC loading reaches this at any step get rows
+
+
+def network_rows_ac(s, data_dir, monitor_pct=NETWORK_MONITOR_PCT) -> dict:
+    """M2c: the LP's network rows for Engie's grid, anchored on the AC baseline (the recorded dispatch).
+
+    DC flows differ from AC loading by up to 20 points on some elements (Nov 18 spike, t40), so the rows linearise
+    around the AC solution: at each step, room = (90% - baseline AC loading) x rating + sign x sum_a PTDF x
+    (d - c - u)_baseline / 1000, so the recorded dispatch sits exactly at its AC loading and each kW moves the flow by
+    the DC sensitivity. Elements below monitor_pct at every step get no row (they can't reach 90% without a
+    swing larger than the fleet's)."""
+    from bench.pf_check import ratings
+    from sim import grid as G
+    from sim.data import load_grid, load_powerflow, load_pp_net, local_range
+    from sim.stress import ACGrid
+    net = load_pp_net(data_dir)
+    gtop = load_grid(data_dir)
+    t0, t1 = s.ts_utc[0], s.ts_utc[-1] + pd.Timedelta(minutes=15)
+    pf = load_powerflow(data_dir, ["slack_p_mw"])
+    slack = pf[(pf.index >= t0) & (pf.index < t1)].slack_p_mw.reindex(s.ts_utc, method="ffill").to_numpy()
+    bus = s.meta.bus.to_numpy()
+    grid = ACGrid(net, list(s.ids), bus)
+    res = grid.run(s.system["bg_load_scale"], np.ones(len(grid.bg_idx)), s.agent["pnet"], index=s.ts_utc,
+                   slack_target_mw=slack)
+    if not res.converged.all():
+        raise RuntimeError("baseline AC power flow did not converge at every step")
+    ld = res.loading()
+    keys = G.monitored(ld, monitor_pct)
+    if not keys:
+        return {"keys": [], "g": np.zeros((0, len(s.ids))), "sign": np.zeros((0, len(s.ts_utc))),
+                "rhs": np.zeros((0, len(s.ts_utc))), "baseline_max_pct": {}, "monitor_pct": monitor_pct}
+    res2 = ACGrid(net, list(s.ids), bus).run(s.system["bg_load_scale"], np.ones(len(grid.bg_idx)), s.agent["pnet"],
+                                            index=s.ts_utc, slack_target_mw=slack, watch=tuple(keys))
+    br = G.branches(gtop)
+    P = G.ptdf(br, gtop.buses.bus.to_numpy(), gtop.slack_bus)
+    row = {k: i for i, k in enumerate(br.key)}
+    col = {b: i for i, b in enumerate(gtop.buses.bus.to_numpy())}
+    g = np.array([[P[row[k], col[b]] for b in bus] for k in keys])
+    sign = np.array([np.sign(res2.trafo_hv[k].iloc[:, 0].to_numpy()) for k in keys])
+    rating = ratings(net)
+    bess = s.agent["bess"]
+    base_inj = np.maximum(bess, 0) - np.maximum(-bess, 0) - s.agent["curt"]          # d - c - u at the recorded dispatch
+    rhs = np.array([(G.LIMIT_PCT - ld[k].to_numpy()) / 100.0 * rating[k] + sign[i] * (g[i] @ base_inj) / 1000.0
+                    for i, k in enumerate(keys)])
+    return {"keys": keys, "g": g, "sign": sign, "rhs": rhs, "monitor_pct": monitor_pct,
+            "baseline_max_pct": {k: float(ld[k].max()) for k in keys},
+            "baseline_steps_ge_90": {k: int((ld[k] >= G.LIMIT_PCT).sum()) for k in keys}}
+
+
+def main_network(cfg_path):
+    """M2c pass item 3: the network-constrained LP ceiling at the 90% limit, next to the unconstrained one, cold and
+    (when the config has a binding call) controllable (D57). Writes ceiling_network.json into the window's M0 folder;
+    the existing ceiling files are never touched."""
+    from sim.run_m1 import controllable_from
+    cfg = load_config(cfg_path)
+    s = load_slice(cfg["data_dir"], cfg["start"], cfg["end"], cfg["slice_tz"])
+    B = load_bench(s)
+    use_slice(B, s)
+    tic = time.time()
+    nw = network_rows_ac(s, cfg["data_dir"])
+    rows_s = time.time() - tic
+    lp_net = {k: nw[k] for k in ("keys", "g", "sign", "rhs")}
+    out = {"header": run_header("bench/m0.py --network", cfg), "monitored": nw["keys"],
+           "monitor_pct": nw["monitor_pct"], "baseline_max_pct": nw["baseline_max_pct"],
+           "baseline_steps_ge_90": nw.get("baseline_steps_ge_90", {}), "rows_secs": round(rows_s, 1),
+           "anchor": "AC baseline (recorded dispatch, held-slack dispatch) plus DC sensitivity", "variants": {}}
+    variants = [("cold", {})]
+    try:
+        pf = controllable_from(cfg, s)
+    except Exception:            # noqa: BLE001  configs without a binding call have no controllable variant
+        pf = 0
+    if pf > 0:
+        bess = s.agent["bess"]
+        base = {"c": np.maximum(-bess, 0), "d": np.maximum(bess, 0), "u": s.agent["curt"]}
+        variants.append(("controllable", {"peak_from": pf, "pre_cap_kw": float(net_load(B, **base)[:pf].max())}))
+    for name, kw in variants:
+        free = solve(B, peak=True, **kw)
+        con = solve(B, peak=True, network=lp_net, **kw) if nw["keys"] else free
+        pf_ = kw.get("peak_from", 0)
+        f_net, c_net = net_load(B, **dispatch(free["x"])), net_load(B, **dispatch(con["x"]))
+        out["variants"][name] = {
+            "unconstrained_peak_mw": float(f_net[pf_:].max()) / 1e3, "network_peak_mw": float(c_net[pf_:].max()) / 1e3,
+            "network_ge_unconstrained": bool(c_net[pf_:].max() >= f_net[pf_:].max() - 1e-3),
+            "network_slack_by_element_mw": con.get("network_slack_by_element_mw", {}),
+            "network_slack_mw_steps": con.get("network_slack_mw_steps", 0.0),
+            "secs": round(free["secs"] + (con["secs"] if nw["keys"] else 0.0), 1)}
+    od = m0_dir(cfg)
+    od.mkdir(parents=True, exist_ok=True)
+    (od / "ceiling_network.json").write_text(json.dumps(out, indent=2))
+    print(json.dumps({"monitored": out["monitored"], **{k: {kk: v[kk] for kk in ("unconstrained_peak_mw",
+                      "network_peak_mw", "network_slack_by_element_mw")} for k, v in out["variants"].items()}}))
+    return out
+
+
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if a != "--controllable"]
+    args = [a for a in sys.argv[1:] if a not in ("--controllable", "--network")]
     path = args[0] if args else REPO / "configs" / "dev_2day.yaml"
     if "--controllable" in sys.argv[1:]:
         main_controllable(path)
+    elif "--network" in sys.argv[1:]:
+        main_network(path)
     else:
         main(path)

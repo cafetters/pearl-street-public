@@ -432,7 +432,7 @@ def t4_threshold(cfg, s: Slice, trailing_days: int = 30) -> float | None:
 
 
 def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=None, off=(), prev: Slice | None = None,
-                suffix: str = "", window_start_utc: str | None = None) -> dict:
+                suffix: str = "", window_start_utc: str | None = None, grid_zones: list | None = None) -> dict:
     """window_start_utc (warm-up, set by main from warmup_days): the reported window starts there; the exchange
     settles money from there on, and the header records it. None: the window is the slice (today)."""
     tic = time.time()
@@ -479,7 +479,9 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
         declared_reference=bool(cfg.get("declared_reference", False)),  # D80/D81 (off by default; one flag)
         **({"settle_from_utc": window_start_utc} if window_start_utc is not None else {}),   # warm-up (off)
         **({"guarantee": True, "guarantee_wear_usd_mwh": float(cfg["wear_usd_mwh"])}
-           if headroom_mw is not None and cfg.get("d62_guarantee") else {}))
+           if headroom_mw is not None and cfg.get("d62_guarantee") else {}),
+        **({"grid_zones": grid_zones, "zone_alpha_scale": float(cfg.get("zone_alpha_scale", 1.0))}
+           if grid_zones else {}))                                    # M2c zone product (D99; off without zones)
     settle_1p = ex is not None and fl["price_mode"] and ex.settlement_reference == "selfish_1p"   # D56
     d62 = ex is not None and bool(cfg.get("d62_guarantee", False))     # D62 (Leaning), off; Exchange checks it needs 1p
     margin = float(cfg.get("peak_response_margin_usd_mwh", 0.0))
@@ -910,15 +912,56 @@ def evaluate(cfg, s: Slice, part, r: dict, rec_net, m0, selfish_run=None) -> dic
             if m["msg_type"] == "peak_settle":
                 peak[m["to"]] += m["payload"]["net_usd"]
         out["_agent_value"] = out["_agent_value"] + np.array([peak.get(i, 0.0) for i in ids])
+        zset = Counter()
+        for m in log:
+            if m["msg_type"] == "zone_settle":                       # M2c (D99): 1p on each zone component
+                zset[m["to"]] += m["payload"]["net_usd"]
+        if zset:
+            out["_agent_value"] = out["_agent_value"] + np.array([zset.get(i, 0.0) for i in ids])
         out.update(m2a_metrics(cfg, s, part, r, selfish_run, log, net, in_window, ids, clock, credits, charges, reb,
                                peak))
         if r.get("price_log") is not None:
             out["price_mode"] = price_summary(cfg, r, log)
+            if any("zone_max_excess_kw" in x for x in r["price_log"]):
+                out["zones"] = zone_summary(r["price_log"], log)
         acc = {m["to"]: m["payload"] for m in log if m["msg_type"] == "guarantee_accrual"}
         if acc:          # D62 (report only here; the test's verdict is bench/d62_guarantee.py)
             out["guarantee"] = {"by_agent": acc, "shortfall_usd_total": float(sum(a["shortfall_usd"] for a in acc.values())),
                                 "positive_shortfall_usd": float(sum(max(a["shortfall_usd"], 0.0) for a in acc.values()))}
     return out
+
+
+def network_block(cfg, out_dir):
+    """M2c pass item 2 (pf_check: true): the AC power-flow check of the final schedules, exchange vs acting alone,
+    from this run's traces (bench/pf_check.py). None when the flag is off (summaries unchanged)."""
+    if not cfg.get("pf_check"):
+        return None
+    from bench import pf_check
+    return pf_check.check_run(out_dir, cfg["data_dir"])
+
+
+def zone_summary(price_log, log) -> dict:
+    """M2c (D99): per gate with zones on, the rounds run, whether it converged or stopped at the round limit (the
+    last prices sent are then in force), and the element excess at its last round; plus each agent's zone_settle."""
+    gates: dict[str, dict] = {}
+    for x in price_log:
+        if x.get("closing") or "zone_max_excess_kw" not in x:
+            continue
+        g = gates.setdefault(x["call_id"], {"call_id": x["call_id"], "binding": x["binding"], "rounds": 0,
+                                            "converged": False, "round_limit": False})
+        g["rounds"] = max(g["rounds"], x["round"])
+        g["converged"] = g["converged"] or bool(x.get("converged"))
+        g["round_limit"] = g["round_limit"] or bool(x.get("round_limit"))
+        g["last_zone_max_excess_kw"] = dict(x["zone_max_excess_kw"])
+    zs = Counter()
+    for m in log:
+        if m["msg_type"] == "zone_settle":
+            zs[m["to"]] += m["payload"]["net_usd"]
+    rows = list(gates.values())
+    return {"gates": rows, "rounds_by_gate": {g["call_id"]: g["rounds"] for g in rows},
+            "gates_round_limit": sum(1 for g in rows if g["round_limit"]),
+            "unhandled_non_convergence": sum(1 for g in rows if not (g["converged"] or g["round_limit"])),
+            "zone_settle_usd_by_agent": dict(zs), "zone_settle_usd_total": float(sum(zs.values()))}
 
 
 def value_share(cfg, s: Slice, part, part_value, m0):
@@ -1509,6 +1552,9 @@ def main(cfg_path):
                 summary["ablation_150"] = prior["ablation_150"]
     summary["series"] = series(table, clock, m0_dir(cfg))
     out_dir.mkdir(parents=True, exist_ok=True)
+    net_check = network_block(cfg, out_dir)
+    if net_check is not None:
+        summary["network"] = net_check
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     table.to_csv(out_dir / "netload.csv", index=False)
     print(json.dumps({"selfish_peak_mw": selfish["peak_mw"], "pass_all_headrooms": summary["pass_all_headrooms"],
