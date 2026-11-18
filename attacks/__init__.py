@@ -38,6 +38,9 @@ def wrap_attacker(spec: dict, agent, cfg: dict):
     if kind == "infeasible_declare":        # owner, Nov 4: declarations that would leave 1p infeasible
         from attacks.declare import InfeasibleDeclare
         return InfeasibleDeclare(agent, tz=tz, order=str(spec.get("order", "outage_first")))
+    if kind == "external":                  # HW9: an outside agent through iface/ (untrusted by design, D63)
+        from iface.external import wrap_external
+        return wrap_external(agent, spec, cfg)
     if kind == "round_liar":                # M4 REP comparison (D24): misreports in non-binding price rounds only
         from attacks.round_liar import RoundLiar
         return RoundLiar(agent, mode=str(spec.get("mode", "overstate")))

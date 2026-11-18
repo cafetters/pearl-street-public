@@ -1,0 +1,66 @@
+{
+ "trace": "runs\\hw9_cold2_jan12\\exchange_h100_rinfo\\trace.jsonl",
+ "git_commit": "1fc6922e0d310c55af11f4d78c15169ec98e6e5e",
+ "roster_size": 80,
+ "external_agent": "PVB_15",
+ "external_in_roster": true,
+ "roster_registered_missing": [],
+ "c1_registered": true,
+ "accepted_binding_nominations": 2,
+ "c2_binding_nomination": true,
+ "c3_settlement_retrieved": true,
+ "trace_sums_usd_synthetic": {
+  "peak_net_usd": 92.41918837204854,
+  "peak_refund_usd": 0.9138348092765594,
+  "peak_charge_usd": -91.50535356277197,
+  "imbalance_charge_usd": 0.0,
+  "settlement_total_S_usd": 92.41918837204854
+ },
+ "answer_dollar_figures": [
+  {
+   "value": 92.42,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0008
+  },
+  {
+   "value": 0.91,
+   "nearest_trace_sum": "peak_refund_usd",
+   "abs_diff": 0.0038
+  },
+  {
+   "value": -91.51,
+   "nearest_trace_sum": "peak_charge_usd",
+   "abs_diff": 0.0046
+  },
+  {
+   "value": 92.42,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0008
+  },
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "imbalance_charge_usd",
+   "abs_diff": 0.0
+  },
+  {
+   "value": 92.42,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0008
+  },
+  {
+   "value": 83.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 9.4192
+  },
+  {
+   "value": 29.0,
+   "nearest_trace_sum": "peak_refund_usd",
+   "abs_diff": 28.0862
+  }
+ ],
+ "c4_total_matches": true,
+ "agent_verdict": "YES",
+ "expected_verdict_from_sign_of_S": "YES",
+ "c5_verdict_matches": true,
+ "pass_all": true
+}

@@ -1,0 +1,22 @@
+Participating beat acting alone by **+$92.42** (synthetic simulator dollars), with no imbalance penalties.
+
+| Item | Amount |
+|---|---|
+| Refund (the exchange's acting-alone reference, at the settled peak price) | +$0.91 |
+| Charge on my metered site net (negative because I exported, so I was paid) | −$91.51 |
+| **Peak settlement net** | **+$92.42** |
+| Imbalance, GRID_OP:4 and GRID_OP:8 (0 kWh deviation each) | $0.00 |
+| **Gain over acting alone** | **+$92.42** |
+
+The settlement covers 53 priced steps between 00:00 UTC Jan 13 and 05:00 UTC Jan 14.
+
+**Why it won:** the grid's peak price was set for 6 pm to midnight Central, when day-ahead energy is cheapest. The acting-alone planner follows those cheap prices, so it was *importing* at full power (−2,841 kW) through part of that peak on both nights. My nominations did the opposite:
+- **Charge:** stored about 2,135 kWh of midday solar on Jan 12 (charging at 450 kW), and soaked up all solar for about 4 hours on Jan 13.
+- **Discharge:** exported 1,800 kW, then 1,200 kW, from 03:00 to 06:00 UTC each night. That's 9 pm to midnight Central, when the top peak prices fell on night 1.
+- **Delivery:** the meter matched my nominations exactly at every step, so there was no imbalance.
+
+**Caveats:**
+- **Energy market not included.** The settlement covers only the peak exchange and imbalance. Energy bought and sold at day-ahead prices isn't reported, and the acting-alone planner also earns from that. This doesn't show whether the battery did better overall.
+- **I left money on the table on night 2 by choice.** Jan 13's peak cleared earliest (00:00–03:15 UTC), not where my discharge sat. After the final price round, I could have moved the discharge into those frozen high prices: about $83 instead of about $29 on that night. That would have quietly removed relief the market had counted on at 04:00–06:00, so I kept the schedule it cleared on.
+- **One harmless rejection.** My first nomination on a non-binding call was rejected as malformed, probably because I sent integer `0` values. I resent it with `0.0` and it was accepted, with no effect on settlement.
+- **Partial reads.** Two inbox dumps were too big to display. I read the first 29k of 68k characters of the first non-binding call's price rounds; everything else I acted on, including both binding calls' final prices, I read in full.

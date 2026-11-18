@@ -1,0 +1,28 @@
+I took part in the full 2-day run, and **participating did not beat acting alone. It tied at exactly $0.00.**
+
+**What I did**
+- Registered PVB_15/bess at its full 2,841.5 kW and subscribed to calls and prices in zone SYS.
+- The operator sent 7 calls. Five were non-binding (GRID_OP:2, 3, 5, 6, 7) and only for information.
+- Two were binding:
+  - **GRID_OP:4**, Jan 12 10:00Z → Jan 13 06:00Z, 80 steps.
+  - **GRID_OP:8**, Jan 12 21:00Z → Jan 14 06:00Z, 132 steps.
+- For both binding calls, all 4 price rounds, including the final one, priced every step at **$0/MWh**. The zone never went over its peak target.
+- **I didn't send a nomination for either binding call.** With a $0 price, a nomination can't earn anything (the settlement is price × the difference from the acting-alone reference). It could only cost money: any miss beyond the free band of max(5% of power, 50 kW) ≈ 142 kW is charged $500/MWh. So the battery ran its acting-alone plan the whole time.
+
+**Settlement (`get_settlement`)**
+
+| Item | Value |
+|---|---|
+| Peak settlement (refund − charge) | none issued → **$0.00** |
+| Imbalance charges | none → **$0.00** |
+| Net gain from participating vs. acting alone | **$0.00** |
+
+**Small differences in the meter readings (none of them paid or charged)**
+- Metered site net matches the acting-alone reference at almost every step, with a few small gaps:
+  - Jan 12 22:45Z: 1,711 kW metered vs 1,725 kW reference.
+  - Jan 13 08:30Z: −742 vs −725 kW.
+  - Jan 13 20:45Z: −799 vs −773 kW.
+- The reference for GRID_OP:4 had the battery charging Jan 13 03:00–04:00Z. On the meter that charging happened at 07:00Z instead. The day-2 day-ahead prices came out after that reference was computed, and the acting-alone plan seems to have re-planned around them; this is my reading, the settlement doesn't say.
+- None of these gaps cost or earned anything, because every priced step was $0.
+
+**Bottom line:** In this cold-weather Jan 12–13 window the exchange never set a nonzero peak price, so there was nothing to earn. Participating came out exactly equal to acting alone ($0 vs $0). It wasn't worse, because I didn't take on the imbalance risk. On a day when the zone goes over its target, the battery could earn money by discharging more than the reference at priced steps. All figures are synthetic simulation dollars.

@@ -1,0 +1,76 @@
+{
+ "trace": "runs\\hw9_cold_jan12\\exchange_h100_rinfo\\trace.jsonl",
+ "git_commit": "0033874d563e9a8b7d176e48cbc4ad95a244ea9b",
+ "roster_size": 80,
+ "external_agent": "PVB_15",
+ "external_in_roster": true,
+ "roster_registered_missing": [],
+ "c1_registered": true,
+ "accepted_binding_nominations": 0,
+ "c2_binding_nomination": false,
+ "c3_settlement_retrieved": true,
+ "trace_sums_usd_synthetic": {
+  "peak_net_usd": 0,
+  "peak_refund_usd": 0,
+  "peak_charge_usd": 0,
+  "imbalance_charge_usd": 0,
+  "settlement_total_S_usd": 0
+ },
+ "answer_dollar_figures": [
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0
+  },
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0
+  },
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0
+  },
+  {
+   "value": 500.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 500.0
+  },
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0
+  },
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0
+  },
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0
+  },
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0
+  },
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0
+  },
+  {
+   "value": 0.0,
+   "nearest_trace_sum": "peak_net_usd",
+   "abs_diff": 0.0
+  }
+ ],
+ "c4_total_matches": true,
+ "agent_verdict": "NO",
+ "expected_verdict_from_sign_of_S": "NO",
+ "c5_verdict_matches": true,
+ "pass_all": false
+}

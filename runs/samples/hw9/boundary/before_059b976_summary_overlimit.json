@@ -1,0 +1,75 @@
+{
+ "agents_worse_off_than_selfish": 1,
+ "agent_value_usd": {
+  "PVB_15": -280464.9736601812,
+  "PVB_33": 1362.905828200939,
+  "COM_03": -2887.4695940929746,
+  "DC_06": -18394.23385984543,
+  "PVB_41": 1257.465233064156
+ },
+ "net_harm": {
+  "rule": "with Pearl Street >= acting alone - max(1% of acting alone, $10), every honest agent",
+  "roster_size": 5,
+  "agents_checked": 5,
+  "missing_from_check": [],
+  "agents_harmed": 1,
+  "total_net_harm_usd": 281169.820598303,
+  "by_agent_usd": {
+   "PVB_15": 281169.82,
+   "PVB_33": 0.0,
+   "COM_03": 0.0,
+   "DC_06": 0.0,
+   "PVB_41": 0.0
+  },
+  "bystanders": {
+   "count": 75,
+   "bill_increase_usd": 0.0,
+   "note": "non-participants keep recorded dispatch, and prices do not react to agents"
+  },
+  "harm_from_attackers": null,
+  "pass": false,
+  "components": {
+   "harmed_agents": {
+    "lost_arbitrage_net_of_credits": -44.22,
+    "da_rt_gap": -41.01,
+    "extra_curtailment": 0.0,
+    "shortfall_charges": 0.0,
+    "imbalance_charges": 281452.91,
+    "rebound_charges": 0.0,
+    "peak_price_net": -284.03,
+    "end_energy": 86.19,
+    "total": 281169.82
+   },
+   "all_agents": {
+    "lost_arbitrage_net_of_credits": 134.7,
+    "da_rt_gap": -178.54,
+    "extra_curtailment": 0.0,
+    "shortfall_charges": 0.0,
+    "imbalance_charges": 281452.91,
+    "rebound_charges": 0.0,
+    "peak_price_net": -2458.33,
+    "end_energy": 86.19,
+    "total": 279036.92
+   },
+   "sum_check": "components sum to each agent's total",
+   "end_kwh_vs_selfish_total": 2698.7,
+   "largest_harmed": [
+    {
+     "agent": "PVB_15",
+     "lost_arbitrage_net_of_credits": -44.22,
+     "da_rt_gap": -41.01,
+     "extra_curtailment": 0.0,
+     "shortfall_charges": 0,
+     "imbalance_charges": 281452.91,
+     "rebound_charges": 0,
+     "peak_price_net": -284.03,
+     "end_energy": 86.19,
+     "total": 281169.82,
+     "end_kwh": 2698.72
+    }
+   ],
+   "agents_with_harm_above_zero": 1
+  }
+ },
+ "peak_mw": 2337.9389441680983
+}
