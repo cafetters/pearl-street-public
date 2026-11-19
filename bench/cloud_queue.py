@@ -92,7 +92,7 @@ import yaml
 from bench.runinfo import run_header
 from sim.data import REPO
 
-SNAPSHOT = "pearl-base"
+SNAPSHOT = "pearl-base-full"     # Nov 19: the full challenge dataset (pearl-base kept for rollback: --snapshot pearl-base)
 API_BASE = "https://api.maritime.sh"     # the CLI's own base URL (its --dry-run prints these requests)
 CRED_TARGET = "maritime:token"           # where the Maritime CLI keeps the account token (Windows credential store)
 API_TIMEOUT_S = 90                       # one HTTP poll; an attached status command is cut at EXEC_WAIT_S
@@ -1020,7 +1020,7 @@ class Queue:
         name, mar = r["name"], self.mar
         self.journal.add("intent", run=name, attempt=attempt, name=sname, awake_before=awake)
         try:
-            sb = mar.json("sandboxes", "create", "--name", sname, "--from", SNAPSHOT, "--size", SIZE,
+            sb = mar.json("sandboxes", "create", "--name", sname, "--from", self.args.snapshot, "--size", SIZE,
                           "--idle", IDLE, "--on-idle", "kill", "--time-limit", f"{self.limit_s // 60}m",
                           "--metadata", f"queue={self.args.queue_id}", "--metadata", f"run={name}")
             sb = {k: sb.get(k) for k in ("id", "name", "createdAt", "expiresAt", "from")}
@@ -1201,7 +1201,7 @@ class Queue:
         r["sandbox_head"] = head.group(1)
         freeze = re.search(r"^FREEZE_SHA256 ([0-9a-f]{64})$", log_text, re.M)
         r["pip_freeze_sha256"] = freeze.group(1) if freeze else None   # packages other than the repo itself
-        r["snapshot"] = SNAPSHOT
+        r["snapshot"] = self.args.snapshot
         self.log(f"[{r['name']}] setup ok ({secs:.0f} s): HEAD {head.group(1)[:12]}, clean tree")
 
     def start_and_poll(self, r, sbx, row):
@@ -1452,6 +1452,8 @@ def main(argv=None):
     ap.add_argument("--period-end", default=PERIOD[1], help="billing period end, the next renewal date")
     ap.add_argument("--owner-approved-over-pace", action="store_true",
                     help="the owner approved starting this queue above 2x pace")
+    ap.add_argument("--snapshot", default=SNAPSHOT,
+                    help=f"saved Maritime snapshot to start sandboxes from (default {SNAPSHOT}); recorded per run")
     ap.add_argument("--queue-id", default=None, help="name for this queue (default: UTC time plus a short id)")
     ap.add_argument("--dry-run", action="store_true", help="check the rules and print the plan; create nothing")
     ap.add_argument("--cleanup", metavar="QUEUE_ID", default=None,
@@ -1469,6 +1471,8 @@ def main(argv=None):
     args.queue_id = args.queue_id or started.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:4]
     if not NAME_OK.match(args.queue_id) or len(args.queue_id) > QUEUE_ID_MAX:
         raise SystemExit(f"--queue-id must match {NAME_OK.pattern} and be at most {QUEUE_ID_MAX} characters")
+    if not NAME_OK.match(args.snapshot):
+        raise SystemExit(f"--snapshot must match {NAME_OK.pattern}")
     if not COMMIT_OK.match(args.commit):
         raise SystemExit("--commit must be a hex commit hash")
     if not 5 <= args.poll_s <= 120:
@@ -1524,8 +1528,8 @@ def main(argv=None):
         report["time_limit_s"], report["idle"] = limit_s, IDLE
         report["spend_check"] = check_spend(args, mar, limit_s, log)
         snaps = [s.get("name") for s in mar.json("sandbox", "snapshots", "list").get("data", [])]
-        if SNAPSHOT not in snaps:
-            raise QueueError(f"snapshot {SNAPSHOT} not found")
+        if args.snapshot not in snaps:
+            raise QueueError(f"snapshot {args.snapshot} not found")
         pre = mar.live_sandboxes()
         if pre:
             log(f"note: {len(pre)} sandboxes already live before this queue: {[s.get('id') for s in pre]}")

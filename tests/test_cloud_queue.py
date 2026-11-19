@@ -115,7 +115,7 @@ class FakeCloud:
         if head == ("billing", "status"):
             return P(0, json.dumps({"results": self.billing}))
         if head == ("sandbox", "snapshots"):
-            return P(0, json.dumps({"data": [{"name": cq.SNAPSHOT}]}))
+            return P(0, json.dumps({"data": [{"name": cq.SNAPSHOT}, {"name": "pearl-alt"}]}))
         if head == ("sandbox", "cp"):
             return self.cp(a[2], a[3], cwd)
         if head == ("sandbox", "exec"):
@@ -134,11 +134,12 @@ class FakeCloud:
                     return P(0, json.dumps({"id": s["id"], "name": name, "createdAt": "t", "expiresAt": "t",
                                             "secret": "mst_SECRET", "urlToken": "mut_SECRET"}))
             sid = self._new(name, meta)
+            self.sbx[sid]["from"] = a[a.index("--from") + 1]
             self.peak_awake = max(getattr(self, "peak_awake", 0), len(self.live()))
             if name in self.create_timeout_after:
                 self.create_timeout_after.discard(name)
                 raise subprocess.TimeoutExpired(["maritime.cmd", "sandboxes", "create"], 300)
-        return P(0, json.dumps({"id": sid, "name": name, "createdAt": "t", "expiresAt": "t", "from": cq.SNAPSHOT,
+        return P(0, json.dumps({"id": sid, "name": name, "createdAt": "t", "expiresAt": "t", "from": a[a.index("--from") + 1],
                                 "secret": "mst_SECRET", "urlToken": "mut_SECRET"}))
 
     def cp(self, src, dst, cwd):
@@ -837,3 +838,21 @@ if __name__ == "__main__":
             traceback.print_exc()
             print(f"FAIL {t.__name__}: {e!r}", flush=True)
     sys.exit(1 if failed else 0)
+
+
+def test_snapshot_option_picks_the_snapshot_and_is_recorded():
+    """Nov 19 (owner): the full dataset lives in a second snapshot; --snapshot picks it, the report records it, and a
+    snapshot that does not exist fails closed before any sandbox is created."""
+    with Env() as env:
+        rc = env.main(*runs_args(env, ["r1"]), *BASE, "--concurrency", "1", "--budget", "1", "--queue-id", "q-snap",
+                      "--snapshot", "pearl-alt")
+        rep = env.report("q-snap")
+        assert rc == 0, rep
+        assert {r["snapshot"] for r in rep["runs"]} == {"pearl-alt"}
+        assert {s["from"] for s in env.cloud.sbx.values()} == {"pearl-alt"}
+        assert not env.cloud.live()
+    with Env() as env:
+        rc = env.main(*runs_args(env, ["r1"]), *BASE, "--concurrency", "1", "--budget", "1", "--queue-id", "q-nosnap",
+                      "--snapshot", "no-such-snapshot")
+        assert rc != 0
+        assert not env.cloud.sbx
