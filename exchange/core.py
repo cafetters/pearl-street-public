@@ -5,6 +5,7 @@ One entry point, handle(raw JSON) -> list of raw JSON replies, so an MCP tool ca
 It never reads data files and never reads a clock: time comes only from the messages it receives
 (the simulator's `tick` closes gates and triggers settlement).
 """
+import math
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from zoneinfo import ZoneInfo
@@ -1451,15 +1452,25 @@ class Exchange:
         n = len(loads)
         if not n or not steps:
             raise Reject("bad_message", "the call has no agents or no target to price", call_id=call["call_id"])
+        floor_note = None
         if self.rho is None:
             powers = sorted(self.agents[aid]["mandate"]["max_kw"] for aid in loads)
             med = (powers[(n - 1) // 2] + powers[n // 2]) / 2
-            self.rho = self.rho0 = PM.rho0_public(self.price_spread, self.step_h, med)
+            spread = self.price_spread
+            if spread is None or not math.isfinite(spread) or spread <= 0:
+                # a flat (or missing) first-day DA spread gave rho0 = alpha = 0 and the centre shift divided by zero
+                # (found Nov 18): use a disclosed floor and log it on this gate's first row
+                floor_note = {"given_usd_mwh": spread if (spread is not None and math.isfinite(spread)) else None,
+                              "used_usd_mwh": PM.SPREAD_FLOOR_USD_MWH}
+                spread = PM.SPREAD_FLOOR_USD_MWH
+            self.rho = self.rho0 = PM.rho0_public(spread, self.step_h, med)
             self.alpha = self.rho / n
         mu, tau, floor_f, cap_f = self.rb
         tol_e, tol_s, streak = self.price_tol
         row = {"call_id": call["call_id"], "binding": call["binding"], "round": r, "t_utc": now,
                "rho": self.rho, "alpha": self.alpha}
+        if floor_note is not None:
+            row["rho0_spread_floor"] = floor_note
         final = r >= self.price_rounds
         zx, zinj = None, None
         if self.zonebook is not None:                   # M2c: element excess at the agents' latest nominations

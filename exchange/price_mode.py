@@ -6,6 +6,7 @@ K = step hours / 1000); rho is $/kW^2-step, alpha $/kW-step per kW. Load is posi
 import math
 
 PRICED = 1e-6            # $/kW-step: a price above this counts as positive
+SPREAD_FLOOR_USD_MWH = 1.0   # rho0 from a missing, zero, negative or non-finite DA spread (Nov 18 fix): disclosed
 
 
 def price_update(pi, agg, target, alpha, cap=math.inf):
