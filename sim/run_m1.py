@@ -41,6 +41,7 @@ from exchange.core import Exchange
 from exchange.trace.logger import TraceLogger
 from sim import physics
 from attacks import wrap_attacker
+from sim.metering_cap import reference_kw, with_m5_defaults
 from sim.bus import Bus
 from sim.clock import Clock
 from sim.data import REPO, Slice, load_config, load_slice
@@ -437,6 +438,7 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
     settles money from there on, and the header records it. None: the window is the slice (today)."""
     tic = time.time()
     wall_start = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cfg = with_m5_defaults(cfg)          # D-a: both M5 defenses on unless the config says false; the header records it
     span = nomination_span(cfg)
     for key in ("declarations_into_1p", "void_rule"):     # D80/D81: one flag, declared_reference, for both halves
         if key in cfg:
@@ -477,6 +479,7 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
         delivery_record=bool(cfg.get("delivery_record", False)),      # D64/D65 (off by default; D61 runs set it)
         silent_reference=bool(cfg.get("silent_reference", False)),    # D78/D79 (off by default)
         declared_reference=bool(cfg.get("declared_reference", False)),  # D80/D81 (off by default; one flag)
+        register_power_check=bool(cfg.get("register_power_check", True)),    # M5, D-a: on by default
         **({"settle_from_utc": window_start_utc} if window_start_utc is not None else {}),   # warm-up (off)
         **({"guarantee": True, "guarantee_wear_usd_mwh": float(cfg["wear_usd_mwh"])}
            if headroom_mw is not None and cfg.get("d62_guarantee") else {}),
@@ -673,8 +676,7 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                 w = call["window"]
                 a0 = iso.index(w["start_utc"])
                 a1 = T if w["end_utc"] == end_iso else iso.index(w["end_utc"])
-                reg_kw = {m["sender"]: float(m["payload"]["mandate"]["max_kw"]) for m in bus.log
-                          if m["msg_type"] == "register"}
+                reg_kw = reference_kw(bus.log, cfg, {ag.id: float(fleet.P[j]) for j, ag in enumerate(agents)})   # M5
                 for j, ag in enumerate(agents):
                     if d62 and binding_gate:    # the same LP as selfish_site_net, kept as a Plan for D62's paths
                         pl = selfish_plan(reg_kw[ag.id], usable[j], fleet.S0[j], pf, pv[j] - curt[j], base_x[j],
@@ -744,8 +746,7 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                 peak[w0:w0 + len(fin["price_usd_mwh"])] = fin["price_usd_mwh"]
                 first = paths is None
                 if first:
-                    reg_kw = {m["sender"]: float(m["payload"]["mandate"]["max_kw"]) for m in bus.log
-                              if m["msg_type"] == "register"}
+                    reg_kw = reference_kw(bus.log, cfg, {ag.id: float(fleet.P[j]) for j, ag in enumerate(agents)})
                     paths = [ModeledPaths(reg_kw[ag.id], usable[j], fleet.S0[j], pv[j] - curt[j], base_x[j],
                                           float(cfg["wear_usd_mwh"]), dt) for j, ag in enumerate(agents)]
                 for j, ag in enumerate(agents):
@@ -1345,7 +1346,7 @@ def share(peak_kw, m0):
 
 
 def main(cfg_path):
-    cfg = load_config(cfg_path)
+    cfg = with_m5_defaults(load_config(cfg_path))        # D-a: the summary header records the effective values
     nomination_span(cfg)          # refuse a bad nomination_span before any work
     n_warm = warmup_days(cfg)     # and a bad or refused warmup_days
     controllable = peak_steps(cfg) == "controllable"     # and a bad peak_steps (D57)

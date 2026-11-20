@@ -18,6 +18,7 @@ wrap_external, which returns an ExternalAgent bound to the server's Session.
 from __future__ import annotations
 
 import threading
+import time
 
 import numpy as np
 
@@ -40,18 +41,42 @@ class Session:
         self.detached = False          # stdin closed: the run finishes with the agent silent
         self.error: str | None = None
         self.agent: "ExternalAgent | None" = None
+        self.wall_s: float | None = None    # M5: the gateway sets its pause_wall_s backstop
+        self.on_missed = None
 
     def pause(self, info: dict):
+        """Park the sim thread until the agent advances. M5 (owner item 5): with wall_s set (the gateway's
+        pause_wall_s), a pause nobody advances ends at the deadline; on_missed (the gateway) then discards the agent's
+        queued sends and logs pause_deadline_missed before the sim resumes. on_missed runs outside the condition's
+        lock, so it can't deadlock with a client thread inside the gateway."""
+        missed = False
         with self.cv:
             if self.detached:
                 return
             self.state, self.info = "paused", info
             self.n_pause += 1
             self.cv.notify_all()
+            deadline = None if not self.wall_s else time.monotonic() + self.wall_s
             while not self._go and not self.detached:
-                self.cv.wait()
+                if deadline is None:
+                    self.cv.wait()
+                    continue
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    missed = True
+                    break
+                self.cv.wait(rem)
             self._go = False
             self.state = "running"
+        if missed and self.on_missed is not None:
+            self.on_missed("wall_clock")
+
+    def resume(self):
+        """End the current pause (the gateway's turn cap). A no-op unless paused, so it never skips a later pause."""
+        with self.cv:
+            if self.state == "paused":
+                self._go = True
+                self.cv.notify_all()
 
     def finish(self, error: str | None = None):
         with self.cv:
@@ -81,16 +106,56 @@ class Session:
             self.cv.notify_all()
 
 
-def set_session(s: Session | None):
-    global _SESSION
+class InlineSession:
+    """A pause handled in the sim's own thread (the red-team harness, M5): pause calls on_pause(agent_id, info), which
+    runs the agent's whole turn through the gateway and returns. advance (or the gateway's turn cap) calls resume."""
+
+    def __init__(self, on_pause):
+        self.on_pause = on_pause
+        self.state, self.info, self.n_pause = "starting", {}, 0
+        self._go = False
+        self.error: str | None = None
+        self.agent: "ExternalAgent | None" = None
+
+    def pause(self, info: dict):
+        self.state, self.info, self._go = "paused", info, False
+        self.n_pause += 1
+        self.on_pause(self.agent.id, info)
+        self.state = "running"
+
+    def resume(self):
+        if self.state == "paused":
+            self._go = True
+
+    def finish(self, error: str | None = None):
+        self.state, self.error = ("error", error) if error else ("finished", None)
+
+
+_FACTORY = None          # agent id -> session (M5: one session per external agent)
+_GATEWAY = None
+
+
+def set_session(s: "Session | None"):
+    """HW9's single-agent server: every external agent shares this one session (there is one)."""
+    global _SESSION, _FACTORY
     _SESSION = s
+    _FACTORY = None if s is None else (lambda aid: s)
+
+
+def set_interface(factory, gateway=None):
+    """M5: a session per external agent from `factory(agent_id)`, each attached to `gateway`."""
+    global _FACTORY, _GATEWAY
+    _FACTORY, _GATEWAY = factory, gateway
 
 
 def wrap_external(agent, spec: dict, cfg: dict):
-    if _SESSION is None:
+    if _FACTORY is None:
         raise RuntimeError("attackers type 'external' needs an interface session (python -m iface.mcp_stdio)")
-    ext = ExternalAgent(agent, _SESSION)
-    _SESSION.agent = ext
+    s = _FACTORY(agent.id)
+    ext = ExternalAgent(agent, s)
+    s.agent = ext
+    if _GATEWAY is not None:
+        _GATEWAY.attach(ext)
     return ext
 
 

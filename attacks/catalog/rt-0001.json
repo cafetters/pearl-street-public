@@ -1,0 +1,44 @@
+{
+ "id": "rt-0001",
+ "title": "An enrolled agent that never registers stops the whole run (denial of service)",
+ "class": "liveness (denial of service)",
+ "check": "liveness",
+ "status": "open in the simulator (sim/run_m1.py roster stop); blocked in the red-team harness by auto-registration",
+ "round": "hand-written (owner, Nov 18, item 4)",
+ "attackers": [
+  "A"
+ ],
+ "world": {
+  "prices": "cheap_peak",
+  "headroom_mw": 0.5,
+  "fleet": [
+   [
+    "A",
+    2000.0,
+    8000.0
+   ],
+   [
+    "B",
+    100.0,
+    400.0
+   ],
+   [
+    "C",
+    60.0,
+    240.0
+   ]
+  ],
+  "flags": {},
+  "seed": 1
+ },
+ "actions": {
+  "A": []
+ },
+ "notes": [
+  "sim/run_m1.py stops the run with 'roster agents not registered' when any roster agent's register is rejected at step 0, and a roster agent that sends no register at all fails the first rule 1p gate (KeyError on reg_kw; HW9 item 2). One silent or rejected outside agent therefore denies the market to everyone.",
+  "The harness auto-registers a silent attacker at its demonstrated power after the registration pause, logged auto_registered and inert (redteam/world.py; owner item 4). That keeps rounds running; it is not the fix.",
+  "Same class: register_power_check (rt-0000's exchange defense) rejects an over-claim, which also stops the run.",
+  "Seen with it [sim, synthetic]: with D78 silent_reference off, an auto-registered silent agent left B and C $1.10 and $0.66 below their twins (a silent agent freezes its zone's price, HW9 item 5); with the red-team flags on (silent_reference included) no bystander is below its twin and the silent attacker is $73.54 below its own. Red-team configs set silent_reference on (owner item 5); tested in tests/test_redteam_regressions.py.",
+  "Fix proposal staged in docs/private/m5_plan_updates.md (sim/run_m1.py not edited: m2b-dc is editing it)."
+ ]
+}

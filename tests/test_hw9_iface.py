@@ -6,6 +6,7 @@ import numpy as np
 
 from exchange import messages as M
 from iface.external import ExternalAgent, Session
+from iface.gateway import ClientSession, Gateway
 from iface.mcp_stdio import Server, power_warnings, tool_list
 
 ISO = ["2023-01-12T06:00:00Z", "2023-01-12T06:15:00Z", "2023-01-12T06:30:00Z", "2023-01-12T06:45:00Z"]
@@ -24,6 +25,9 @@ def fake_ext():
                               "deadline_utc": ISO[1]}
     srv = Server.__new__(Server)
     srv.session, srv.trace_path, srv.calls_after_finish = s, None, []
+    srv.gateway, srv.require_credential, srv.agent_id = Gateway(), False, "A_1"     # M5: calls go through the gateway
+    srv.gateway.attach(ext)
+    srv.cs = ClientSession(ext.legal_entity, "A_1")
     return ext, srv
 
 
@@ -47,16 +51,17 @@ def test_sends_are_queued_with_the_bound_sender_and_validated():
     assert err and r["code"] == "unknown_tool"
 
 
-def test_register_precheck_refuses_mismatch_and_sends_nothing():
+def test_register_grants_demonstrated_power_and_refuses_mismatch():
+    """M5 (Nov 19) replaces HW9's register_precheck: an over-claim is granted at the demonstrated power (D38, stated in
+    the reply); another asset or entity is refused by the gateway and nothing is sent."""
     ext, srv = fake_ext()
+    srv.gateway.limits["registration_cooldown_h"] = 0.0
+    r, err = srv.call("register", {"asset_id": "B_2/bess", "legal_entity": "x", "zone": "SYS", "max_kw": 50.0})
+    assert err and r["code"] == "not_your_asset" and ext.outbox == []
     r, err = srv.call("register", {"asset_id": "A_1/bess", "legal_entity": "A_1 Owner LLC (simulated)", "zone": "SYS",
                                    "max_kw": 150.0})
-    assert err and r["code"] == "register_precheck" and "max_kw" in r["detail"] and ext.outbox == []
-    r, err = srv.call("register", {"asset_id": "B_2/bess", "legal_entity": "x", "zone": "SYS", "max_kw": 50.0})
-    assert err and r["code"] == "register_precheck" and ext.outbox == []
-    r, err = srv.call("register", {"asset_id": "A_1/bess", "legal_entity": "A_1 Owner LLC (simulated)", "zone": "SYS",
-                                   "max_kw": 100.0})
-    assert not err and len(ext.outbox) == 1
+    assert not err and r["granted_kw"] == 100.0 and len(ext.outbox) == 1
+    assert M.decode(ext.outbox[0])["payload"]["mandate"]["max_kw"] == 100.0
 
 
 def test_advance_refused_before_register():

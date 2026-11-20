@@ -89,7 +89,7 @@ class Exchange:
                  refusal_notice: bool = False, settlement_rule: str = "today", silent_reference: bool = False,
                  declared_reference: bool = False, settle_from_utc: str | None = None,
                  grid_zones: list | None = None, zone_alpha_scale: float = 1.0, zone_tol_excess_kw: float = 1.0,
-                 zone_adapt_tau: float = 0.0):
+                 zone_adapt_tau: float = 0.0, register_power_check: bool = False):
         """require_nominations: offers clear only for agents whose nominations cover the need's window (D32).
         scarcity_usd_mwh: the zone's scarcity price for imbalance; None turns imbalance off (M1).
         M2a (D34, D37), all off by default: prep_clearing (an offer clears only if its declared preparation keeps
@@ -188,6 +188,13 @@ class Exchange:
                                  "selfish_1p")
             self.config["settlement_rule"] = settlement_rule
         self.settlement_rule = settlement_rule
+        # M5 (owner, Nov 18; class default off, runs default on since D-a, Nov 19): register checks the mandate's
+        # max_kw against the metering service's
+        # demonstrated power_kw for the assets, as daily_kwh is checked against demonstrated energy (D38's limits are
+        # demonstrated, not claimed; the gateway's grant is a first line only, D61 puts the defense here)
+        if register_power_check:
+            self.config["register_power_check"] = True
+        self.register_power_check = bool(register_power_check)
         # D78/D79 (owner, Nov 3; off by default): a step with no nomination from an active agent counts as the agent
         # having nominated its 1p reference there (N = Q), in the price loop, the binding aggregate and the imbalance
         # base; the metering service sends references for every call that runs price rounds
@@ -573,6 +580,13 @@ class Exchange:
             if self.attested_owners and att["owner"] != p["legal_entity"]:
                 raise Reject("unauthorized_sender", "legal_entity is not the asset's attested owner",
                              asset_id=a["asset_id"], field="legal_entity")
+        if self.register_power_check:      # M5: max_kw within demonstrated power (class default off; runs default on, D-a)
+            if any(a["asset_id"] not in self.limits for a in assets):
+                raise Reject("over_demonstrated_limit", "no demonstrated limits on record for these assets")
+            demo_kw = sum(self.limits[a["asset_id"]]["power_kw"] for a in assets)
+            if mandate["max_kw"] > demo_kw + 1e-9:
+                raise Reject("over_demonstrated_limit", "max_kw above demonstrated power",
+                             max_kw=float(mandate["max_kw"]), demonstrated_kw=demo_kw)
         budget = mandate.get("daily_kwh")
         if budget is not None:
             if not (isinstance(budget, dict) and all(isinstance(v, (int, float)) and v >= 0 for v in budget.values())):

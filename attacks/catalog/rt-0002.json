@@ -1,0 +1,68 @@
+{
+ "id": "rt-0002",
+ "title": "A session that never advances freezes the run (denial of service)",
+ "class": "liveness (denial of service)",
+ "check": "liveness",
+ "never_advance": {
+  "A": 2
+ },
+ "status": "blocked by the gateway's pause deadline (turn cap max_calls_per_pause; wall-clock pause_wall_s backstop)",
+ "round": "hand-written (owner, Nov 18, item 5)",
+ "attackers": [
+  "A"
+ ],
+ "world": {
+  "prices": "cheap_peak",
+  "headroom_mw": 0.5,
+  "fleet": [
+   [
+    "A",
+    2000.0,
+    8000.0
+   ],
+   [
+    "B",
+    100.0,
+    400.0
+   ],
+   [
+    "C",
+    60.0,
+    240.0
+   ]
+  ],
+  "flags": {},
+  "seed": 1
+ },
+ "actions": {
+  "A": [
+   {
+    "pause_no": 1,
+    "tool": "register",
+    "args": {
+     "asset_id": "$asset_id",
+     "max_kw": {
+      "$power_x": 1.0
+     }
+    }
+   },
+   {
+    "pause_no": 1,
+    "tool": "subscribe",
+    "args": {
+     "signals": [
+      "call_nominations",
+      "peak_price"
+     ],
+     "zones": [
+      "SYS"
+     ]
+    }
+   }
+  ]
+ },
+ "notes": [
+  "Every pause parks the simulator until the pausing agent advances, so one client that keeps calling tools (or goes quiet) without advancing freezes every other agent.",
+  "Blocked: past max_calls_per_pause the pause is missed (pause_deadline_missed, queued sends discarded, the sim resumes); pause_wall_s does the same on the wall clock for a client that goes quiet. The agent then counts as silent for that gate (D78 silent_reference where the run sets it)."
+ ]
+}

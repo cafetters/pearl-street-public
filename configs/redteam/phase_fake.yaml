@@ -1,0 +1,12 @@
+# A phase of fake-backend red-team rounds (M5 smoke). D94: the phase cap holds even if every round spends its cap.
+name: phase_fake
+cap_usd_phase: 4.0
+catalog_dir: attacks/catalog
+write_catalog: false      # smoke: confirmed candidates are reported, not added to the tracked catalog
+rounds:
+  - configs/redteam/open_ended.yaml
+  - configs/redteam/collusion_shared.yaml
+  - configs/redteam/collusion_none.yaml
+  - configs/redteam/collusion_planted.yaml
+  - configs/redteam/whitebox.yaml
+  - configs/redteam/injection.yaml

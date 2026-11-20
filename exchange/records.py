@@ -1,8 +1,9 @@
-"""D65 delivery record ("credit score") for arm C: pure functions over messages and meters only (D1).
+"""D65 delivery record for arm C: pure functions over messages and meters only (D1).
 
 The record is kept per asset and its liable legal entity (the register message's legal_entity), not per agent
 software, so a new agent that registers the same asset for the same entity continues the record. It limits upside
-and never charges (charges stay with imbalance); the credit line that would use it, and D65's response measure, are
+and never charges (charges stay with imbalance); the proven capacity that would use it (owner, Nov 19: replaces the
+term "credit line"), and D65's response measure, are
 not built (the response measure is invalid as defined after D62's FAIL_separation; RESPONSE_HOOK marks its place).
 """
 from collections import defaultdict

@@ -1,0 +1,19 @@
+# Red-team round (D61 part 2, M5): open_ended. Fake backend, synthetic world.
+name: open_ended
+type: open_ended
+attackers: [A]
+fake_playbooks: {A: over_register}
+seed: 1
+backend: fake            # no provider calls (M5); real rounds need docs/plans/redteam_round1.md committed first
+attacker_models:         # D93 attacker list (owner, Nov 12)
+  - {provider: anthropic, model: claude-sonnet-5-5, weight: 0.9}
+  - {provider: anthropic, model: claude-opus-5-5, weight: 0.1}
+cap_usd_round: 0.50      # D94 per round (fake calls are priced from the D94 table; nothing is spent)
+turn_cap: 30             # LLM replies per pause; the gateway max_calls_per_pause also applies
+flags:                   # owner, Nov 18: both M5 defenses on in every red-team config; D78 for a missed pause
+  register_power_check: true
+  reference_power_cap: true
+  silent_reference: true
+gateway_limits: {}       # the gateway defaults (grant on); see iface/gateway.py LIMITS
+world: {prices: cheap_peak, headroom_mw: 0.5}     # redteam/synth.py [sim, synthetic]
+thresholds: {gain_usd: 0.01, harm_usd: 0.01}

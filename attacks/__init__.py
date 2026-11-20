@@ -41,6 +41,9 @@ def wrap_attacker(spec: dict, agent, cfg: dict):
     if kind == "external":                  # HW9: an outside agent through iface/ (untrusted by design, D63)
         from iface.external import wrap_external
         return wrap_external(agent, spec, cfg)
+    if kind == "replay":                    # M5: a red-team catalog entry replayed through the gateway
+        from attacks.replay import wrap_replay
+        return wrap_replay(agent, spec, cfg)
     if kind == "round_liar":                # M4 REP comparison (D24): misreports in non-binding price rounds only
         from attacks.round_liar import RoundLiar
         return RoundLiar(agent, mode=str(spec.get("mode", "overstate")))

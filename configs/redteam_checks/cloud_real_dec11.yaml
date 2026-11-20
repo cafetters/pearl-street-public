@@ -1,0 +1,17 @@
+# Launcher config for the real-data harness run (python -m bench.cloud_queue ... --module redteam.launch).
+# data_dir, start, end, slice_tz and m0_dir are for the launcher's checks (the round's world config reads the data).
+run_name: rt_real_dec11
+data_dir: ../data
+start: 2023-12-11
+end: 2023-12-12
+slice_tz: America/Chicago
+m0_dir: runs/m0_dec11
+compare_to: none
+seed: 1
+phase:
+  name: rt_real_dec11
+  cap_usd_phase: 1.0
+  catalog_dir: attacks/catalog
+  write_catalog: false     # real-data entries go beside the round (catalog_candidates), never to attacks/catalog
+  rounds:
+    - configs/redteam_checks/real_dec11_exploit.yaml

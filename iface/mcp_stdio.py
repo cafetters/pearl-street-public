@@ -7,6 +7,11 @@ iface/external.py) until the agent calls `advance`. Tool calls only touch state 
 Every JSON-RPC request and response is appended to runs/<run_name>/mcp_log.jsonl; the trace (header: config, seed,
 git commit) is runs/<run_name>/<variant>/trace.jsonl. Protocol: newline-delimited JSON-RPC 2.0 on stdin/stdout;
 everything the simulator prints goes to runs/<run_name>/server.log, never to stdout.
+
+M5 (Nov 19): every tool call goes through iface/gateway.py (credential, identity, limits, refusals). A config with
+`gateway.credential_sha256` requires the client's PEARL_STREET_CREDENTIAL (read once at start, redacted from
+mcp_log.jsonl); a config without a `gateway` block keeps HW9's local-process access (no credential), and the reply
+says so. A raw JSON-RPC line longer than the gateway's max_line_bytes is refused before parsing.
 """
 from __future__ import annotations
 
@@ -27,10 +32,11 @@ DESCR = {
                 "capacity and state-of-charge limits (kWh), current state of charge, the window, the current "
                 "simulated time, and battery_idle_site_net_kw (one value per step: the site's net kW with the "
                 "battery idle; + export, - import). Read-only.",
-    "register": "Send `register` for your agent and battery. Must be the first thing you do, at the start pause. "
-                "Use the asset_id, legal_entity and zone from my_asset; max_kw must not exceed power_kw. The "
-                "interface checks these against my_asset before sending, because a rejected registration stops "
-                "the whole simulated run. Queued: delivered when you call advance.",
+    "register": "Send `register` for your battery. Must be the first thing you do, at the start pause. Give the "
+                "asset_id from my_asset and max_kw. Your legal entity comes from your credential. The interface "
+                "grants at most your battery's demonstrated power_kw and says so (claimed_kw, granted_kw); the "
+                "exchange also rejects a max_kw above it. A refused attempt starts a cool-down (retry_after_utc). "
+                "Queued: delivered when you call advance.",
     "subscribe": "Send `subscribe`. Without it you receive no calls or prices. Use signals "
                  "[\"call_nominations\", \"peak_price\"] and zones [your zone]. Queued until advance.",
     "nominate": "Send `nominate`: your planned SITE NET kW (not battery kW) for every step of a call's window, "
@@ -67,33 +73,9 @@ PRICE_NEEDS_YOU = ("The exchange can only form a zone peak price from a complete
                    "not nominated an open call, its peak price stays 0 for every agent in the zone. Nominate your "
                    "planned site net for each open call (your best plan, for example battery_idle_site_net_kw plus "
                    "your intended battery kW); you can re-nominate in later price rounds before the deadline.")
+from iface.gateway import SCHEMAS, Gateway, ClientSession, power_warnings  # noqa: F401 (HW9 tests)
+
 SETTLE_TYPES = ("peak_settle", "imbalance", "settle", "guarantee_accrual", "delivery_record")
-
-
-def power_warnings(ext, args: dict) -> list[dict]:
-    """HW9 improvement (boundary probe, Nov 18): the exchange accepts any finite site-net nomination (it has no
-    baseline to bound it by), so a physically impossible one was accepted silently and surfaced only as an imbalance
-    charge at settlement. The interface knows the owner's battery-idle site net, so it warns at send time when the
-    implied battery kW (nominated - battery-idle net) is beyond the battery's power. A warning, not a refusal: the
-    message is still sent, and the exchange's rules are unchanged."""
-    try:
-        i0 = ext.iso.index(args["window"]["start_utc"])
-    except (KeyError, TypeError, ValueError):
-        return []
-    idle, p = ext.inner.base_export, float(ext.inner.b.P)
-    over = []
-    for i, v in enumerate(args.get("kw") or []):
-        if i0 + i < len(idle) and isinstance(v, (int, float)) and abs(v - idle[i0 + i]) > p * 1.001 + 1e-6:
-            over.append(i)
-    if not over:
-        return []
-    worst = max(over, key=lambda i: abs(args["kw"][i] - idle[i0 + i]))
-    return [{"code": "exceeds_asset_power", "steps": len(over), "first_step_index": over[0],
-             "worst_step_index": worst, "worst_implied_battery_kw": round(float(args["kw"][worst] - idle[i0 + worst]), 1),
-             "power_kw": round(p, 1),
-             "detail": "nominated site net minus your battery-idle site net needs more battery power than you have "
-                       "at these steps. The message was sent: the exchange accepts any finite schedule, but your "
-                       "battery is clipped to power_kw and the shortfall beyond the free band pays imbalance."}]
 
 
 def now_utc() -> str:
@@ -101,26 +83,35 @@ def now_utc() -> str:
 
 
 def tool_list() -> list[dict]:
-    from agents.tool_iface import TOOLS
-    base = {t["name"]: t["input_schema"] for t in TOOLS}
     names = ["my_asset", "register", "subscribe", "read_inbox", "read_public", "nominate", "declare_availability",
              "declare_outage", "advance", "get_settlement"]
-    return [{"name": n, "description": DESCR[n], "inputSchema": EXTRA_TOOLS.get(n) or base[n]} for n in names]
+    return [{"name": n, "description": DESCR[n], "inputSchema": SCHEMAS[n]} for n in names]
 
 
 class Server:
-    def __init__(self, cfg_path: str, out_dir: Path | None = None, start_sim: bool = True):
-        from iface.external import Session, set_session
+    def __init__(self, cfg_path: str | None = None, out_dir: Path | None = None, start_sim: bool = True,
+                 cfg: dict | None = None, slice_fn=None):
+        """slice_fn (M5 seam): a callable returning (slice, participants) instead of reading cfg's data window, so
+        tests and the harness can serve a synthetic slice. cfg: a config dict instead of a path."""
+        from iface.credentials import ENV_VAR, CredentialStore
+        from iface.external import Session, set_interface
         from sim.data import REPO, load_config
-        self.cfg = load_config(cfg_path)
+        self.cfg = cfg if cfg is not None else load_config(cfg_path)
         ext = [a for a in self.cfg.get("attackers") or [] if a.get("type") == "external"]
         if len(ext) != 1:
             raise ValueError("the config must name exactly one attackers entry with type external")
         self.agent_id = str(ext[0]["agent"])
         self.out_dir = out_dir or (REPO / "runs" / self.cfg["run_name"])
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.slice_fn = slice_fn
+        g = self.cfg.get("gateway")
+        self.require_credential = bool(g and g.get("credential_sha256"))
+        self.gateway = Gateway(limits=(g or {}).get("limits"),
+                               credentials=CredentialStore((g or {}).get("credential_sha256")))
+        self.token = os.environ.get(ENV_VAR) if self.require_credential else None    # read once, never logged
+        self.cs = None
         self.session = Session()
-        set_session(self.session)
+        set_interface(lambda aid: self.session, self.gateway)
         self.thread = None
         self.trace_path: Path | None = None
         self.calls_after_finish: list[str] = []
@@ -134,17 +125,21 @@ class Server:
             from sim import run_m1 as R
             from sim.data import load_slice
             cfg = self.cfg
-            s = load_slice(cfg["data_dir"], cfg["start"], cfg["end"], cfg["slice_tz"])
-            part = R.participants(s, cfg["agents"])
+            if self.slice_fn is not None:
+                s, part = self.slice_fn()
+            else:
+                s = load_slice(cfg["data_dir"], cfg["start"], cfg["end"], cfg["slice_tz"])
+                part = R.participants(s, cfg["agents"])
             fl = R.m2a_flags(cfg)
-            prev = R.previous_day(cfg) if fl["daily_energy"] else None
+            prev = R.previous_day(cfg) if fl["daily_energy"] and self.slice_fn is None else None
             h = cfg["headroom_mw"][0] if isinstance(cfg["headroom_mw"], list) else cfg["headroom_mw"]
             r = R.run_variant(cfg, s, part, self.out_dir, h, prev=prev)
             self.trace_path = self.out_dir / r["variant"] / "trace.jsonl"
             with open(self.out_dir / "run_result.json", "w", encoding="utf-8") as f:
                 json.dump({"variant": r["variant"], "trace": str(self.trace_path), "runtime_s": r["runtime_s"],
                            "refused": r["refused"], "external_agent": self.agent_id,
-                           "steps_following_nomination": getattr(self.session.agent, "n_followed", None)}, f, indent=1)
+                           "steps_following_nomination": getattr(self.session.agent, "n_followed", None),
+                           "gateway_log": self.gateway.log}, f, indent=1)
             self.session.finish()
         except BaseException as e:      # reported to the agent on its next call
             traceback.print_exc()
@@ -163,7 +158,23 @@ class Server:
                 if missing:
                     out["open_calls_you_have_not_nominated"] = missing
                     out["attention"] = PRICE_NEEDS_YOU
+        missed = [x for x in self.gateway.log if x.get("code") == "pause_deadline_missed"]
+        if missed:
+            out["pauses_missed"] = len(missed)
         return out
+
+    def client(self):
+        """The gateway session for this process's client: from the credential when the config requires one, else
+        HW9's local-process access bound to the configured agent."""
+        if self.cs is None and self.session.agent is not None:
+            if self.require_credential:
+                cs = self.gateway.open_session(self.token, self.agent_id)
+                if not isinstance(cs, ClientSession):
+                    return cs
+                self.cs = cs
+            else:
+                self.cs = ClientSession(self.session.agent.legal_entity, self.agent_id)
+        return self.cs
 
     def call(self, name: str, args: dict) -> tuple[dict, bool]:
         s = self.session
@@ -171,7 +182,14 @@ class Server:
             return {"ok": False, "code": "unknown_tool"}, True
         if s.state in ("starting",):
             s.wait_first_pause(120.0)
+        if s.state == "error" and s.agent is None:
+            return {"ok": False, "code": "run_failed", "detail": s.error}, True
+        cs = self.client()
+        if not isinstance(cs, ClientSession):
+            return (cs or {"ok": False, "code": "sim_running"}), True
         if name == "advance":
+            if args:
+                return {"ok": False, "code": "bad_arguments"}, True
             if s.agent is not None and not any(m["msg_type"] == "register" for m in s.agent.sent.values()):
                 return {"ok": False, "code": "not_registered_yet",
                         "detail": "call register (and subscribe) before advance: the run needs every battery "
@@ -180,43 +198,12 @@ class Server:
                 return {"ok": True, **self.status()}, False
             s.advance(ADVANCE_WAIT_S)
             return {"ok": True, **self.status()}, False
-        if s.state == "running":
-            return {"ok": False, "code": "sim_running", "detail": "call advance until it returns status paused"}, True
-        if s.state == "error" and s.agent is None:
-            return {"ok": False, "code": "run_failed", "detail": s.error}, True
-        ext = s.agent
-        if name == "my_asset":
-            return {"ok": True, **ext.asset_facts()}, False
         if name == "get_settlement":
             return self.settlement(), False
-        if s.state in ("finished", "error") and name in SEND_TOOLS:
-            return {"ok": False, "code": "run_over", **self.status()}, True
-        if name == "register" and isinstance(args, dict):
-            facts = ext.asset_facts()
-            bad = [k for k in ("asset_id", "legal_entity", "zone") if k in args and args[k] != facts[k]]
-            mk = args.get("max_kw")
-            if isinstance(mk, (int, float)) and not (0 < mk <= facts["power_kw"]):
-                bad.append("max_kw")
-            if bad:
-                return {"ok": False, "code": "register_precheck",
-                        "detail": f"{bad} must match my_asset (max_kw in (0, power_kw]); nothing was sent"}, True
-        if name == "read_inbox":
-            if args:
-                return {"ok": False, "code": "bad_arguments"}, True
-            out = []
-            for raw in ext.inbox:
-                try:
-                    out.append(json.loads(raw))
-                except ValueError:
-                    continue
-            ext.inbox.clear()
-            return {"ok": True, "messages": out}, False
-        r = ext.iface.call(name, args if isinstance(args, dict) else {})
-        if name == "nominate" and r.get("ok"):
-            w = power_warnings(ext, args)
-            if w:
-                r["warnings"] = w
-        return r, not r.get("ok", False)
+        r, err = self.gateway.call(cs, name, args)
+        if r.get("code") in ("sim_running", "run_over"):
+            r = {**r, **self.status()}
+        return r, err
 
     def settlement(self) -> dict:
         ext = self.session.agent
@@ -247,6 +234,19 @@ class Server:
         return out
 
 
+def make_server(cfg_path: str) -> "Server":
+    """The run's server. A config with `synthetic_world: true` serves redteam.synth's synthetic slice (smoke tests of
+    the stdio transport only; never Engie data)."""
+    from sim.data import load_config
+    cfg = load_config(cfg_path)
+    if cfg.get("synthetic_world"):
+        import numpy as np
+        from redteam.synth import synthetic_slice
+        s = synthetic_slice()
+        return Server(cfg=cfg, slice_fn=lambda: (s, np.arange(len(s.ids))))
+    return Server(cfg_path)
+
+
 def serve(cfg_path: str):
     # the protocol owns the real stdout; anything else written to fd 1 or sys.stdout goes to server.log
     proto = os.fdopen(os.dup(1), "w", encoding="utf-8", newline="\n")
@@ -259,8 +259,8 @@ def serve(cfg_path: str):
     sys.stderr = log
     mcp_log = open(run_dir / "mcp_log.jsonl", "a", encoding="utf-8")
 
-    def record(direction, obj):
-        mcp_log.write(json.dumps({"wall_utc": now_utc(), "dir": direction, "msg": obj}) + "\n")
+    def record(direction, obj):      # the credential never reaches the log (M5)
+        mcp_log.write(redact_text(json.dumps({"wall_utc": now_utc(), "dir": direction, "msg": obj})) + "\n")
         mcp_log.flush()
 
     def reply(obj):
@@ -268,8 +268,27 @@ def serve(cfg_path: str):
         proto.write(json.dumps(obj) + "\n")
         proto.flush()
 
+    from iface.credentials import redact_text
+    from iface.gateway import LIMITS
+    g0 = load_config(cfg_path).get("gateway") or {}
+    max_line = int((g0.get("limits") or {}).get("max_line_bytes", LIMITS["max_line_bytes"]))
     server = None
-    for raw in sys.stdin.buffer:
+    stdin = sys.stdin.buffer
+    while True:
+        raw = stdin.readline(max_line + 1)       # M5: never buffer more than the cap of one line
+        if not raw:
+            break
+        if len(raw) > max_line:      # size on raw bytes, before parsing; nothing of the line is echoed
+            n = len(raw)
+            while not raw.endswith(b"\n"):      # drain the rest of the oversized line
+                raw = stdin.readline(max_line + 1)
+                if not raw:
+                    break
+                n += len(raw)
+            record("in_oversize", {"bytes": n})
+            reply({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "message_too_large",
+                                                          "data": {"max_bytes": max_line}}})
+            continue
         line = raw.decode("utf-8", "replace").strip()
         if not line:
             continue
@@ -288,18 +307,18 @@ def serve(cfg_path: str):
                 ver = (req.get("params") or {}).get("protocolVersion") or PROTOCOL
                 reply({"jsonrpc": "2.0", "id": rid, "result": {
                     "protocolVersion": ver, "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "pearl-street", "version": "0.2-hw9"},
+                    "serverInfo": {"name": "pearl-street", "version": "0.3-m5"},
                     "instructions": "Pearl Street flexibility exchange: you operate one battery. Read SKILL.md. "
                                     "Start with my_asset, register, subscribe, advance."}})
                 if server is None:
-                    server = Server(cfg_path)
+                    server = make_server(cfg_path)
             elif method == "ping":
                 reply({"jsonrpc": "2.0", "id": rid, "result": {}})
             elif method == "tools/list":
                 reply({"jsonrpc": "2.0", "id": rid, "result": {"tools": tool_list()}})
             elif method == "tools/call":
                 if server is None:
-                    server = Server(cfg_path)
+                    server = make_server(cfg_path)
                 p = req.get("params") or {}
                 res, is_err = server.call(p.get("name"), p.get("arguments") or {})
                 reply({"jsonrpc": "2.0", "id": rid, "result": {
