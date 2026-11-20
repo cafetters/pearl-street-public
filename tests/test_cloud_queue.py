@@ -519,18 +519,71 @@ def test_max_awake_counts_the_whole_account():
         assert cloud.peak_awake <= 3, cloud.peak_awake
 
 
-def test_second_launcher_is_refused_while_the_lock_is_held():
+def test_a_held_create_lock_delays_creates_but_never_refuses_the_queue():
+    """Nov 20 (owner): several launchers may run at once. The machine lock covers only each count-then-create step,
+    so a launcher whose create lock is held elsewhere waits, then runs."""
     with Env() as env:
         held = cq.LauncherLock().acquire("other")
+        out = {}
+        th = threading.Thread(target=lambda: out.update(rc=env.main(
+            *runs_args(env, ["l1"]), *BASE, "--concurrency", "1", "--budget", "1", "--queue-id", "q-l1")))
+        th.start()
+        time.sleep(2.0)
         try:
-            rc = env.main(*runs_args(env, ["l1"]), *BASE, "--concurrency", "1", "--budget", "1", "--queue-id", "q-l1")
-            assert rc == 1
-            assert "another cloud launcher" in env.report("q-l1")["error"]
-            assert not env.cloud.sbx
+            assert not env.cloud.sbx                      # no create while the lock is held
         finally:
             held.release()
-        rc = env.main(*runs_args(env, ["l2"]), *BASE, "--concurrency", "1", "--budget", "1", "--queue-id", "q-l2")
-        assert rc == 0
+        th.join(60)
+        assert out.get("rc") == 0, env.report("q-l1")
+
+
+def test_two_launchers_run_at_once_under_one_account_cap():
+    cloud = FakeCloud(run_s={"a1": 1, "a2": 1, "b1": 1, "b2": 1})
+    with Env(cloud) as env:
+        out = {}
+        th = threading.Thread(target=lambda: out.update(rc=env.main(
+            *runs_args(env, ["a1", "a2"]), *BASE, "--concurrency", "2", "--budget", "2", "--max-awake", "3",
+            "--queue-id", "q-pa")))
+        th.start()
+        rc = env.main(*runs_args(env, ["b1", "b2"]), *BASE, "--concurrency", "2", "--budget", "2", "--max-awake", "3",
+                      "--queue-id", "q-pb")
+        th.join(120)
+        assert rc == 0 and out.get("rc") == 0, (env.report("q-pa"), env.report("q-pb"))
+        assert cloud.peak_awake <= 3, cloud.peak_awake
+
+
+def test_cap_is_60_and_concurrency_defaults_to_the_run_count():
+    assert cq.CAP_CODE == 60
+    with Env() as env:
+        rc = env.main(*runs_args(env, ["c1", "c2", "c3"]), *BASE, "--budget", "3", "--queue-id", "q-cd")
+        assert rc == 0, env.report("q-cd")
+        assert "concurrency 3," in (env.tmp / "runs" / "cloud" / "_queues" / "q-cd" / "queue.log").read_text()
+        rc = env.main(*runs_args(env, ["c4"]), *BASE, "--budget", "1", "--max-awake", "61", "--queue-id", "q-c61")
+        assert rc == 1
+
+
+def test_concurrency_file_widens_a_running_queue():
+    cloud = FakeCloud(run_s={f"g{i}": 3 for i in range(4)})
+    with Env(cloud) as env:
+        qd = env.tmp / "runs" / "cloud" / "_queues" / "q-cf"
+
+        def widen():
+            for _ in range(200):
+                if qd.exists():
+                    (qd / "CONCURRENCY").write_text("not a number")
+                    time.sleep(1.5)
+                    (qd / "CONCURRENCY").write_text("4")
+                    return
+                time.sleep(0.05)
+        th = threading.Thread(target=widen)
+        th.start()
+        rc = env.main(*runs_args(env, [f"g{i}" for i in range(4)]), *BASE, "--concurrency", "1", "--budget", "4",
+                      "--queue-id", "q-cf")
+        th.join(10)
+        assert rc == 0, env.report("q-cf")
+        assert cloud.peak_awake >= 2, cloud.peak_awake
+        log = (qd / "queue.log").read_text()
+        assert "CONCURRENCY" in log and "ignored" in log
 
 
 def test_429_is_waited_out_without_spending_a_budget_slot():

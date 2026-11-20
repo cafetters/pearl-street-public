@@ -25,9 +25,10 @@ failed before the stop, reports "failed" and exits 1; a finished queue "ok", 0. 
 live sandbox in the journal or named ps-<queue_id>-... with queue=<queue_id> metadata, and confirms with a listing.
 
 Rules enforced before anything is created (PLAN.md section 6):
-  one launcher a machine-wide OS lock, held for the whole queue, so two launchers can't both pass these checks
-  concurrency  at most 40 sandboxes awake for code-only queues, 5 with --llm (a config with a truthy top-level key
-               containing "llm" needs --llm); --max-awake (default and max 40) caps every awake sandbox on the
+  launchers   several may run at once (owner, Nov 20). A machine-wide OS lock is held only for each count-then-create
+               step and for the spend check, so two launchers can't both take the last awake slot
+  concurrency  at most 60 sandboxes awake for code-only queues, 5 with --llm (a config with a truthy top-level key
+               containing "llm" needs --llm); --max-awake (default and max 60) caps every awake sandbox on the
                account, counted before each create
   run budget   --budget is the queue's sandbox count, declared up front: the launcher never creates more. A create
                that makes no sandbox spends no slot. Only infrastructure failures are retried, once; a nonzero run
@@ -99,7 +100,7 @@ API_TIMEOUT_S = 90                       # one HTTP poll; an attached status com
 SIZE = "small"
 RATE_USD_H = 0.022            # Small, 2 vCPU 4 GB (pricing page; Nov 4 sandbox: $0.005273 for 862 s)
 IDLE = "10m"
-CAP_CODE, CAP_LLM = 40, 5
+CAP_CODE, CAP_LLM = 60, 5      # Nov 20 (owner): Maritime's account limit of 60 awake; LLM queues stay at 5
 MIN_LIMIT_S, PILOT_LIMIT_S, CHUNK_S = 3600, 86400, 20 * 3600
 HARD_STOP_USD, PACE_FROM_USD = 400.0, 50.0
 PERIOD = ("2026-11-04", "2026-12-05")   # first billing period (PLAN.md); pass --period-* once it renews
@@ -886,7 +887,8 @@ def check_spend(args, mar, limit_s, log):
 
 
 class LauncherLock:
-    """Held for the whole queue, from before the spend and cap checks until the process ends."""
+    """The machine-wide lock (all worktrees and sessions). Since Nov 20 it is held only around each count-then-create
+    step and the spend check, so several launchers can run at once without overshooting the account's awake cap."""
 
     def __init__(self, path: Path = None):
         self.path = path or LOCK_PATH
@@ -914,8 +916,7 @@ class LauncherLock:
                     continue
             self.f.close()
             self.f = None
-            raise QueueError(f"another cloud launcher holds {self.path}: one queue at a time, so two can't both "
-                             "pass the spend and awake-cap checks")
+            raise QueueError(f"another cloud launcher holds {self.path} (its count-then-create step)")
 
     def release(self):
         if self.f is not None:
@@ -940,6 +941,9 @@ class Queue:
         self.created = []          # every sandbox id this queue created, for cleanup
         self.journal = Journal(qdir / "created.jsonl")
         self.create_lock = threading.Lock()  # count of awake sandboxes and the create that follows, one at a time
+        self.machine_lock = LauncherLock()   # the same step across launchers (Nov 20: several may run at once)
+        self.target = args.concurrency       # worker count; the CONCURRENCY file can change it mid-queue
+        self.active = 0
         self.sandboxes = []        # cost log rows
         self.left = args.budget
         self.stop = threading.Event()   # set by Ctrl+C or the STOP file: no new sandbox, no retry, polls end
@@ -1003,12 +1007,15 @@ class Queue:
         sname = sandbox_name(self.args.queue_id, name, attempt)
         with self.create_lock:
             try:
-                awake = self.wait_awake_slot(name)
+                awake = self.wait_awake_slot(name)        # returns holding the machine lock
             except Exception:
                 self.refund()          # no sandbox was made: the budget slot goes back
                 raise
-            self.check_stop("create")
-            sb = self.create(r, attempt, sname, awake)
+            try:
+                self.check_stop("create")
+                sb = self.create(r, attempt, sname, awake)
+            finally:
+                self.machine_lock.release()
         sbx = sb["id"]
         self.journal.add("created", id=sbx, run=name, attempt=attempt, name=sname,
                          recovered=bool(sb.get("recovered")))
@@ -1082,14 +1089,33 @@ class Queue:
         with self.lock:
             self.left += 1
 
+    def hold_machine_lock(self, t0):
+        """Take the machine lock, waiting while another launcher is in its count-then-create step."""
+        while True:
+            try:
+                self.machine_lock.acquire("create", wait_s=5)
+                return
+            except QueueError:
+                if self.stop.is_set():
+                    raise Stopped("queue stopped while waiting for the machine lock") from None
+                if time.time() - t0 > AWAKE_GIVE_UP_S:
+                    raise
+
     def wait_awake_slot(self, name):
         """Hold until the whole account has fewer than --max-awake sandboxes awake (ours, other queues', the hosted
-        exchange's). Called with create_lock held, so this launcher's own workers can't both take the last one."""
+        exchange's). Called with create_lock held, so this launcher's own workers can't both take the last one, and
+        returns holding the machine lock, so another launcher can't either; the caller releases it after the create."""
         t0, said = time.time(), False
         while True:
-            awake = [s for s in self.mar.live_sandboxes() if s.get("state") not in ("ended", "paused")]
+            self.hold_machine_lock(t0)
+            try:
+                awake = [s for s in self.mar.live_sandboxes() if s.get("state") not in ("ended", "paused")]
+            except BaseException:
+                self.machine_lock.release()
+                raise
             if len(awake) < self.args.max_awake:
                 return len(awake)
+            self.machine_lock.release()
             if not said:
                 self.log(f"[{name}] {len(awake)} sandboxes awake on the account (max {self.args.max_awake}): waiting")
                 said = True
@@ -1306,16 +1332,55 @@ class Queue:
         pending = list(self.runs)
 
         def worker():
-            while True:
+            try:
+                while True:
+                    with self.lock:
+                        if not pending or self.stop.is_set() or self.active > self.target:
+                            return             # (a narrowed CONCURRENCY ends extra workers between runs)
+                        r = pending.pop(0)
+                    try:
+                        self.run(r)
+                    except Exception as e:  # noqa: BLE001 (run() records its own failures; this is a last resort)
+                        r["status"] = "failed"
+                        r.setdefault("errors", []).append(f"worker: {e!r}")
+            finally:
                 with self.lock:
-                    if not pending or self.stop.is_set():
-                        return
-                    r = pending.pop(0)
-                try:
-                    self.run(r)
-                except Exception as e:  # noqa: BLE001 (run() records its own failures; this is a last resort)
-                    r["status"] = "failed"
-                    r.setdefault("errors", []).append(f"worker: {e!r}")
+                    self.active -= 1
+
+        def spawn(n):
+            for _ in range(n):
+                with self.lock:
+                    self.active += 1
+                th = threading.Thread(target=worker, name=f"cq-{len(threads)}", daemon=True)
+                threads.append(th)
+                th.start()
+
+        conc_file, conc_seen = stop_file.with_name("CONCURRENCY"), None
+        cap = min(CAP_LLM if self.args.llm else CAP_CODE, self.args.max_awake)
+
+        def read_concurrency():
+            """CONCURRENCY in the queue folder (owner, Nov 20): a whole number widens or narrows the running queue,
+            within the caps; anything else is logged and ignored."""
+            nonlocal conc_seen
+            try:
+                raw = conc_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                return
+            if raw == conc_seen:
+                return
+            conc_seen = raw
+            if not raw.isdigit() or int(raw) < 1:
+                self.log(f"CONCURRENCY {raw[:20]!r} ignored: not a whole number of 1 or more")
+                return
+            n = min(int(raw), cap)
+            if n != int(raw):
+                self.log(f"CONCURRENCY {raw} clamped to {n} (cap {cap})")
+            with self.lock:
+                old, self.target = self.target, n
+                grow = min(n - self.active, len(pending)) if not self.stop.is_set() else 0
+            self.log(f"CONCURRENCY: {old} -> {n} workers")
+            if grow > 0:
+                spawn(grow)
 
         def on_sigint(signum, frame):
             if not self.stop.is_set():
@@ -1327,13 +1392,13 @@ class Queue:
                 self.log("second Ctrl+C: skipping the rest of the grace wait")
                 self.hurry.set()
 
-        signal.signal(signal.SIGINT, on_sigint)   # stays installed through cleanup; main() restores it
-        threads = [threading.Thread(target=worker, name=f"cq-{i}", daemon=True)
-                   for i in range(min(self.args.concurrency, len(self.runs)))]
-        for t in threads:
-            t.start()
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGINT, on_sigint)   # stays installed through cleanup; main() restores it
+        threads = []
+        spawn(min(self.args.concurrency, len(self.runs)))
         stop_at, swept = None, False
         while any(t.is_alive() for t in threads):
+            read_concurrency()
             if not self.stop.is_set() and stop_file.exists():
                 self.log(f"STOP: {stop_file.name} found: no new sandbox or retry; running sandboxes are being killed")
                 self.stop_reason = self.stop_reason or "stop_file"
@@ -1464,7 +1529,7 @@ def main(argv=None):
     if args.cleanup:
         return cleanup_main(args.cleanup)
     args.runs_from = args.runs_from or str(REPO / "runs")
-    for flag in ("run", "commit", "concurrency", "budget"):
+    for flag in ("run", "commit", "budget"):
         if getattr(args, flag) is None:
             ap.error(f"--{flag} is required (except with --cleanup)")
     started = datetime.now(timezone.utc)
@@ -1506,9 +1571,9 @@ def main(argv=None):
     lock = None
     try:
         mar = Maritime(log)
-        if not args.dry_run:
-            lock = LauncherLock().acquire(args.queue_id)
         runs = read_runs(args)
+        if args.concurrency is None:      # Nov 20 (owner): default = the run count, within the caps
+            args.concurrency = min(len(runs), CAP_LLM if args.llm else args.max_awake)
         check_caps(args, runs)
         secret_env = check_secret_env(args.secret_env)
         report["secret_env"] = sorted(secret_env)          # names only
@@ -1526,7 +1591,14 @@ def main(argv=None):
             report["llm_phase_committed_usd"] = check_phase(cfgs, args.phase_cap_usd, args.phase_spent_usd)
         limit_s = limit_seconds(args)
         report["time_limit_s"], report["idle"] = limit_s, IDLE
-        report["spend_check"] = check_spend(args, mar, limit_s, log)
+        if not args.dry_run:      # the machine lock for the spend check only, so two launchers can't both count
+            lock = LauncherLock().acquire(args.queue_id, wait_s=600)      # the same headroom
+        try:
+            report["spend_check"] = check_spend(args, mar, limit_s, log)
+        finally:
+            if lock is not None:
+                lock.release()
+                lock = None
         snaps = [s.get("name") for s in mar.json("sandbox", "snapshots", "list").get("data", [])]
         if args.snapshot not in snaps:
             raise QueueError(f"snapshot {args.snapshot} not found")
@@ -1646,7 +1718,8 @@ def main(argv=None):
             pass
         if args.dry_run:
             shutil.rmtree(qdir, ignore_errors=True)
-        signal.signal(signal.SIGINT, prev_sigint)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGINT, prev_sigint)
         if lock is not None:
             lock.release()
     return 0 if ok else 2 if stopped else 1
