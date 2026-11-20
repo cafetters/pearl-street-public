@@ -44,6 +44,7 @@ class FakeCloud:
       poll_fail_s            status polls fail for this long after a run starts
       foreign                extra live sandboxes owned by someone else: list of (name, metadata)
       run_log_extra          bytes appended to every run.log (M4: a secret value echoed by a run)
+      cp_fail                how many sandbox cp calls fail first with a transient network error
     """
 
     def __init__(self, **kw):
@@ -117,6 +118,11 @@ class FakeCloud:
         if head == ("sandbox", "snapshots"):
             return P(0, json.dumps({"data": [{"name": cq.SNAPSHOT}, {"name": "pearl-alt"}]}))
         if head == ("sandbox", "cp"):
+            with self.lock:
+                if getattr(self, "cp_fail", 0) > 0:          # Nov 20: transient upload errors seen on Maritime
+                    self.cp_fail -= 1
+                    return P(1, "", 'Error: PUT /files: Put "https://api-sbx-x.h2.sb.mtm.sh/v1/files?path=x": '
+                                    "dial tcp: i/o timeout")
             return self.cp(a[2], a[3], cwd)
         if head == ("sandbox", "exec"):
             return self.exec(a)
@@ -285,7 +291,7 @@ class Env:
         for name, val in (("REPO", self.tmp), ("make_bundle", fake_bundle), ("EXEC_WAIT_S", 1),
                           ("STOP_SWEEP_S", 3), ("STOP_GRACE_S", 8),
                           ("LOCK_PATH", self.tmp / "launcher.lock"), ("AWAKE_WAIT_S", 0.2),
-                          ("KILL_RETRY_WAITS_S", (0, 0, 0)), ("FIND_WAITS_S", (0,))):
+                          ("KILL_RETRY_WAITS_S", (0, 0, 0)), ("FIND_WAITS_S", (0,)), ("CP_RETRY_WAITS_S", (0, 0, 0))):
             self.saved[name] = getattr(cq, name, None)
             setattr(cq, name, val)
         self.saved["_run"], self.saved["exe"] = cq.Maritime._run, None
@@ -909,3 +915,14 @@ def test_snapshot_option_picks_the_snapshot_and_is_recorded():
                       "--snapshot", "no-such-snapshot")
         assert rc != 0
         assert not env.cloud.sbx
+
+
+def test_transient_copy_errors_are_retried_within_the_attempt():
+    """Nov 20: Maritime's file API failed intermittently (PUT /files timeouts, identity-check errors). A copy is
+    idempotent, so it is retried in place; the run must not spend its one retry on it."""
+    cloud = FakeCloud(cp_fail=3)
+    with Env(cloud) as env:
+        rc = env.main(*runs_args(env, ["u1"]), *BASE, "--concurrency", "1", "--budget", "1", "--queue-id", "q-cp")
+        assert rc == 0, env.report("q-cp")
+        assert cloud.cp_fail == 0
+        assert "retrying" in (env.tmp / "runs" / "cloud" / "_queues" / "q-cp" / "queue.log").read_text()

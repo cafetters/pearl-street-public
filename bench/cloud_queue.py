@@ -120,6 +120,9 @@ LOCK_PATH = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "pea
 LOCK_WAIT_S = 10
 AWAKE_WAIT_S, AWAKE_GIVE_UP_S = 60, 1800  # account at --max-awake: re-check every 60 s, give the slot back after 30 min
 # Maritime errors read "... returned HTTP <code>: {json}". These are worth waiting out; anything else fails at once.
+CP_RETRY_WAITS_S = (5, 15, 30)       # Nov 20: transient copy errors are retried in place (copies are idempotent)
+CP_TRANSIENT = re.compile(r"PUT /files|GET /files|Okibi Identity|i/o timeout|timed out|timeout|WinError 10060|"
+                          r"connection (?:reset|refused|aborted)|EOF|TLS handshake", re.I)
 RETRYABLE = re.compile(r"HTTP (?:429|502|503|504)\b|\"code\":\s*\"(?:rate_limit\w*|too_many_requests|awake_limit\w*|"
                        r"no_ready_machine|capacity\w*|unavailable|service_unavailable|overloaded)\"", re.I)
 RETRY_HINT = re.compile(r"retry[-_ ]?after(?:[-_ ]?(ms|seconds|s))?\"?\s*[:=]?\s*\"?(\d+(?:\.\d+)?)", re.I)
@@ -299,12 +302,25 @@ class Maritime:
         out = self.call(*args, "--json", **kw).stdout
         return json.loads(out[out.index("{"):])
 
+    def _cp(self, src, dst, cwd):
+        """A file copy, retried in place on a transient network error (Nov 20: Maritime's file API failed
+        intermittently with PUT /files timeouts and identity-check errors). Copies are idempotent."""
+        for i, wait in enumerate((*CP_RETRY_WAITS_S, None)):
+            try:
+                return self.call("sandbox", "cp", src, dst, cwd=cwd, timeout=900)
+            except MaritimeError as e:
+                if wait is None or not CP_TRANSIENT.search(str(e)):
+                    raise
+                self.log(f"maritime sandbox cp {Path(str(src)).name}: transient error ({CP_TRANSIENT.search(str(e)).group(0)}); "
+                         f"retrying in {wait} s (try {i + 2})")
+                time.sleep(wait)
+
     def cp_up(self, sbx, local: Path, remote: str):
-        self.call("sandbox", "cp", local.name, f"{sbx}:{remote}", cwd=local.parent, timeout=900)
+        self._cp(local.name, f"{sbx}:{remote}", local.parent)
 
     def cp_down(self, sbx, remote: str, local: Path):
         local.parent.mkdir(parents=True, exist_ok=True)
-        self.call("sandbox", "cp", f"{sbx}:{remote}", local.name, cwd=local.parent, timeout=900)
+        self._cp(f"{sbx}:{remote}", local.name, local.parent)
 
     def exec(self, sbx, *cmd, check=True):
         """Attached exec, at most EXEC_WAIT_S."""
