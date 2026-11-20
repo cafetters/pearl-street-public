@@ -1,6 +1,6 @@
 # flex-exchange
 
-Snapshot of a private development repo at 44a71335c8d50db9a6f5dd5fb1cb0b7cba9139eb. Published for MIT AI Studio Fall 2026 HW8 review. License TBD.
+Snapshot of a private development repo at 6ecd4583dffbdc7c29a2a97343a9a6832bf14156. Published for MIT AI Studio Fall 2026 HW8 review. License TBD.
 
 docs/PLAN.md and some internal notes are referenced in comments but kept in the private repo.
 
