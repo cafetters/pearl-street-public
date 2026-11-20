@@ -124,7 +124,9 @@ CP_RETRY_WAITS_S = (5, 15, 30)       # Nov 20: transient copy errors are retried
 CP_TRANSIENT = re.compile(r"PUT /files|GET /files|Okibi Identity|i/o timeout|timed out|timeout|WinError 10060|"
                           r"connection (?:reset|refused|aborted)|EOF|TLS handshake", re.I)
 RETRYABLE = re.compile(r"HTTP (?:429|502|503|504)\b|\"code\":\s*\"(?:rate_limit\w*|too_many_requests|awake_limit\w*|"
-                       r"no_ready_machine|capacity\w*|unavailable|service_unavailable|overloaded)\"", re.I)
+                       r"no_ready_machine|capacity\w*|unavailable|service_unavailable|overloaded)\"|"
+                       # Nov 20: the CLI's identity pre-check failed, so the request itself was never sent
+                       r"Okibi Identity authorization: checking Okibi Identity support", re.I)
 RETRY_HINT = re.compile(r"retry[-_ ]?after(?:[-_ ]?(ms|seconds|s))?\"?\s*[:=]?\s*\"?(\d+(?:\.\d+)?)", re.I)
 SECRETS = [(re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}"), "sk-***"),       # M4: provider key shapes
            (re.compile(r"\b(mst|mut|sk|pk)_[A-Za-z0-9_-]{8,}"), r"\1_***"),

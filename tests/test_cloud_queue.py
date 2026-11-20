@@ -45,6 +45,7 @@ class FakeCloud:
       foreign                extra live sandboxes owned by someone else: list of (name, metadata)
       run_log_extra          bytes appended to every run.log (M4: a secret value echoed by a run)
       cp_fail                how many sandbox cp calls fail first with a transient network error
+      exec_preflight_fail    how many sandbox exec calls fail first at the CLI's identity pre-check (never sent)
     """
 
     def __init__(self, **kw):
@@ -125,6 +126,11 @@ class FakeCloud:
                                     "dial tcp: i/o timeout")
             return self.cp(a[2], a[3], cwd)
         if head == ("sandbox", "exec"):
+            with self.lock:
+                if getattr(self, "exec_preflight_fail", 0) > 0:     # Nov 20: the CLI's identity pre-check failed
+                    self.exec_preflight_fail -= 1
+                    return P(1, "", 'Error: Okibi Identity authorization: checking Okibi Identity support: Get '
+                                    '"https://api.maritime.sh/.well-known/okibi-identity": context deadline exceeded')
             return self.exec(a)
         return P(2, "", f"fake: unknown command {argv}")
 
@@ -926,3 +932,13 @@ def test_transient_copy_errors_are_retried_within_the_attempt():
         assert rc == 0, env.report("q-cp")
         assert cloud.cp_fail == 0
         assert "retrying" in (env.tmp / "runs" / "cloud" / "_queues" / "q-cp" / "queue.log").read_text()
+
+
+def test_an_exec_that_failed_its_identity_precheck_is_retried_in_place():
+    """Nov 20: `sandbox exec` failed at the CLI's identity pre-check (the command never reached the sandbox), so it is
+    safe to repeat; a run must not spend its one retry on it."""
+    cloud = FakeCloud(exec_preflight_fail=3)
+    with Env(cloud) as env:
+        rc = env.main(*runs_args(env, ["x1"]), *BASE, "--concurrency", "1", "--budget", "1", "--queue-id", "q-ex")
+        assert rc == 0, env.report("q-ex")
+        assert cloud.exec_preflight_fail == 0
