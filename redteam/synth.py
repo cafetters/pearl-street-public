@@ -25,13 +25,15 @@ FLEET = (("A", 2000.0, 8000.0), ("B", 100.0, 400.0), ("C", 60.0, 240.0))      # 
 PRICES = ("d61", "cheap_peak")
 
 
-def synthetic_slice(fleet=FLEET, prices: str = "cheap_peak") -> Slice:
+def synthetic_slice(fleet=FLEET, prices: str = "cheap_peak", days: int = 1) -> Slice:
     """prices: "d61", the D61 tests' shape (20 $/MWh, 30 at night); "cheap_peak" (default), dear nights (60) and the
     cheapest energy exactly at the evening system peak (15 at 19:00 local), so an acting-alone battery recharges into
-    the peak and its rule 1p reference is power-limited there. Both synthetic."""
+    the peak and its rule 1p reference is power-limited there. Both synthetic. days: the same day repeated (2 gives
+    one day boundary, e.g. for D70's memory sub-round)."""
     if prices not in PRICES:
         raise ValueError(f"prices must be one of {PRICES}")
-    ts = pd.date_range("2023-01-02 06:00", periods=96, freq="15min", tz="UTC")
+    T = 96 * int(days)
+    ts = pd.date_range("2023-01-02 06:00", periods=T, freq="15min", tz="UTC")
     hour = np.asarray(ts.tz_convert("America/Chicago").hour)
     n = len(fleet)
     sys_load = 1000 + 300 * np.exp(-((hour - 19) ** 2) / 4)
@@ -39,7 +41,7 @@ def synthetic_slice(fleet=FLEET, prices: str = "cheap_peak") -> Slice:
         price = 20 + 10 * (hour < 6)
     else:
         price = 30.0 + 30.0 * (hour < 6) - 15.0 * np.exp(-((hour - 19) ** 2) / 2.0)
-    z = np.zeros((n, 96))
+    z = np.zeros((n, T))
     meta = pd.DataFrame({"entity_id": [f[0] for f in fleet], "entity_type": "pv_bess",
                          "bess_power_kw": [f[1] for f in fleet], "bess_energy_kwh": [f[2] for f in fleet],
                          "eta_inverter": 0.97, "eta_battery_rt": 0.9, "soc0": 0.5, "poi_limit_kw": 1e6,
@@ -47,7 +49,7 @@ def synthetic_slice(fleet=FLEET, prices: str = "cheap_peak") -> Slice:
     assert set(META_COLS) <= set(meta.columns)
     return Slice(ids=np.array([f[0] for f in fleet]), ts_utc=ts, dt_h=0.25,
                  agent={"load": z.copy(), "pv": z.copy(), "curt": z.copy(), "bess": z.copy(),
-                        "soc": np.full((n, 96), 50.0), "soh": np.full((n, 96), 100.0), "pnet": z.copy()},
+                        "soc": np.full((n, T), 50.0), "soh": np.full((n, T), 100.0), "pnet": z.copy()},
                  system={"price_rt": price.astype(float), "price_da": price.astype(float), "system_load": sys_load,
-                         "net_disp": sys_load, "bg_load_scale": np.ones(96)},
+                         "net_disp": sys_load, "bg_load_scale": np.ones(T)},
                  meta=meta)

@@ -1,0 +1,26 @@
+# sha256 (full) of the pre-registered sweep files, written by the commit that adds docs/plans/proven_capacity_experiment.md
+# AMENDED before any sweep run (Nov 19): sim/run_m1.py changed only the idle_reference message ids (aa070a9)
+# AMENDED before any sweep result (Nov 20): owner option (a), rate 1 until the first miss (bd3e3f5)
+# AMENDED before any sweep result (Nov 20): owner, a miss never cuts what was seen delivered; exact counted net (f28606c)
+# AMENDED before any sweep result (Nov 20): price-state loads keep flag-off values where no counted value exists (a8b438f)
+# AMENDED before any sweep result (Nov 20): counted relief rescaled only when a factor is below 1 (9b29f90)
+# AMENDED before any sweep result (Nov 20): counted totals added with += like flag-off, not sum()
+c2b304fb89b6f838805fec580a0a64649624509e27cbe2ce6ef41855c3550c66 *configs/proven_sweep/pcsweep_00.yaml
+2a7c4d91b264299ea226879f09e73577347ad00879e4d060e4b4c640804a511e *configs/proven_sweep/pcsweep_01.yaml
+1c7bffd2633d854407b3157f0ca9c846e0539910c7f79158ff398993d31f6bcc *configs/proven_sweep/pcsweep_02.yaml
+66ebcc2749b26c666e68ca4b994f50291ad7df7c7645b2cef6924d116363b5c2 *configs/proven_sweep/pcsweep_03.yaml
+df92f1fb1b61dbb08cbe3388e26203cf4ba01c3d0a96a13816fe6c66027a2cc2 *configs/proven_sweep/pcsweep_04.yaml
+758b3f95e43f22e6b1052ef6ba7378137bf950d76386b88fce4ebb6f22601eec *configs/proven_sweep/pcsweep_05.yaml
+feaa9d844041c6eaab64ea155e03ff1cbd7861b47709af1931ae6d9279889a89 *configs/proven_sweep/pcsweep_06.yaml
+78c7bfac6f218fb26c9e1ba911429a76b65ed1715e3170b6dbf9373192780e5b *configs/proven_sweep/pcsweep_07.yaml
+5bd55b75dc96224015605e0827a1567fc9c5e7d1d653f4c742c76d55a162ad09 *configs/proven_sweep/pcsweep_08.yaml
+1e61de02f290c615fd12a50731ccccf5b2cfbb6e61699f3a3dc2c408ba5edb6a *configs/proven_sweep/pcsweep_09.yaml
+1c910382bf59c073880d9a6ed5c13ef7606917e8d405ebf5d293326c420c5505 *configs/proven_sweep/pcsweep_10.yaml
+38e35f822beefaf1b2327888a2b91b0f005b65c6af95639b2cb7124c38c8408f *configs/proven_sweep/pcsweep_11.yaml
+e9709007ba5860c95496adea1ae7106b079d8567ad19acdc4bb2164d1774a433 *redteam/proven_sweep.py
+0a8155a2768ab7b6f369ca57ffbb23185be3ec6f16a9c4418dc7bdd597e3aebd *redteam/proven_scenarios.py
+f7ef4f54519a5c0d5f650c49e7ee89b0b01652f0a43912abfe501f467fb1d2e5 *exchange/proven.py
+e83f1700ecaa5d29cdf76425740e7089f2ceb2f3e69f1a85a2ead3beb3523b7c *exchange/core.py
+b89e4a7f043d769852e538a36b288331c99a261a733dc681f18f60808c92edbc *sim/run_m1.py
+a90351202b4a9f05f8de17e6351a3cc0741010b84a1f4c1930d23406f21e07b0 *attacks/over_nominate.py
+cd5ef8d12eeb074a821fdbc37b9f213dc6a0e34b123b64054f1f392b72f62e52 *redteam/synth.py

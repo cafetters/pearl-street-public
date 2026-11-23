@@ -89,7 +89,8 @@ class Exchange:
                  refusal_notice: bool = False, settlement_rule: str = "today", silent_reference: bool = False,
                  declared_reference: bool = False, settle_from_utc: str | None = None,
                  grid_zones: list | None = None, zone_alpha_scale: float = 1.0, zone_tol_excess_kw: float = 1.0,
-                 zone_adapt_tau: float = 0.0, register_power_check: bool = False):
+                 zone_adapt_tau: float = 0.0, register_power_check: bool = False,
+                 nomination_power_check: bool = False, proven_capacity: dict | None = None):
         """require_nominations: offers clear only for agents whose nominations cover the need's window (D32).
         scarcity_usd_mwh: the zone's scarcity price for imbalance; None turns imbalance off (M1).
         M2a (D34, D37), all off by default: prep_clearing (an offer clears only if its declared preparation keeps
@@ -195,6 +196,32 @@ class Exchange:
         if register_power_check:
             self.config["register_power_check"] = True
         self.register_power_check = bool(register_power_check)
+        # Q-N10 (owner, Nov 19; off by default): a nomination's relief is bounded by the asset's granted power. The
+        # metering service sends each asset's battery-idle site net per call (idle_reference) before any nomination;
+        # a nomination above idle + min(mandate max_kw, demonstrated power_kw) on any step is refused
+        # (over_power_nomination, refs only). More import is never relief, so only the export side is bounded. A
+        # nomination with no idle reference on record fails closed.
+        if nomination_power_check:
+            self.config["nomination_power_check"] = True
+        self.nomination_power_check = bool(nomination_power_check)
+        self.call_idle: dict[str, dict[str, dict[str, float]]] = {}       # call_id -> asset_id -> t_utc -> kW
+        # Proven capacity (owner, Nov 19; revises D65's proven capacity; Leaning; off unless configured): the price
+        # loop and the binding aggregate count each agent's relief against its 1p reference at its proven capacity
+        # and delivery rate (exchange/proven.py), within a portfolio budget for unproven capacity and a contingency
+        # cap per asset and legal entity. The imbalance base and settlement stay on the unweighted nomination, so
+        # pay stays metered delivery. Needs D78 (silent_reference) and rule 1p for the reference.
+        self.proven_cfg = None
+        self.proven_state: dict = {}            # agent -> proven.State
+        self.proven_snap: dict = {}             # binding call_id -> t_utc -> agent -> counted values at the aggregate
+        self.proven_events: list[dict] = []     # one per agent and binding call, after its window (the update)
+        self.proven_steps: dict = {}            # t_utc -> fleet counted / firm / delivered / uncovered kW
+        self.proven_misses: list[dict] = []     # steps where an agent delivered under its nominated relief
+        if proven_capacity:
+            from exchange import proven as _P
+            if not (silent_reference and settlement_reference == "selfish_1p"):
+                raise ValueError("proven_capacity needs silent_reference and settlement_reference selfish_1p")
+            self.proven_cfg = _P.Config.from_dict(proven_capacity)
+            self.config["proven_capacity"] = dict(proven_capacity)
         # D78/D79 (owner, Nov 3; off by default): a step with no nomination from an active agent counts as the agent
         # having nominated its 1p reference there (N = Q), in the price loop, the binding aggregate and the imbalance
         # base; the metering service sends references for every call that runs price rounds
@@ -537,6 +564,14 @@ class Exchange:
         nomination. None if any registered agent in the zone has no nomination there (under D78's silent_reference,
         given the call, an agent with no nomination counts at its 1p reference for that call; None if that is missing
         too)."""
+        if self.proven_cfg is not None and call_id is not None:
+            cv = self._counted_values(zone, t, call_id)
+            if cv is None:
+                return None
+            total = 0.0          # a plain += in the flag-off order: sum() compensates, so its last bits differ
+            for aid, x in cv.items():
+                total += -x["counted"] + self.pending_prep.get(aid, {}).get(t, 0.0)
+            return total
         total = 0.0
         for aid, a in self.agents.items():
             if zone not in a["zones"].values() or aid in self.inactive:
@@ -546,6 +581,77 @@ class Exchange:
                 return None
             total += -v + self.pending_prep.get(aid, {}).get(t, 0.0)
         return total
+
+    def _proven_init(self, aid):
+        """At registration: an agent's proven-capacity state from the metering service's attestation only (the
+        asset type, nameplate and history come from asset_limits, never from the register message)."""
+        from exchange import proven as _P
+        a = self.agents[aid]
+        lims = [self.limits.get(x) or {} for x in a["assets"]]
+        has_hist = all(int(l.get("history_days", 1)) > 0 for l in lims)
+        demo = sum(float(l.get("power_kw", 0.0)) for l in lims)
+        plates = [l.get("nameplate_kw") for l in lims]
+        nameplate = None if any(v is None for v in plates) else sum(float(v) for v in plates)
+        atype = lims[0].get("asset_type") if lims else None
+        hist = {x: (l.get("asset_type"), float(l["power_kw"])) for x, l in self.limits.items()
+                if int(l.get("history_days", 1)) > 0 and l.get("asset_type") is not None}
+        tm = _P.type_median_kw(hist, atype) if atype is not None else None
+        self.proven_state[aid] = _P.initial(has_hist, demo, float(a["mandate"]["max_kw"]), nameplate, tm,
+                                            self.proven_cfg)
+
+    def _idle_net(self, aid, call_id, t) -> float | None:
+        """The agent's battery-idle site net at t for the call (idle_reference, summed over its assets), or None."""
+        refs = self.call_idle.get(call_id, {})
+        total = 0.0
+        for x in self.agents[aid]["assets"]:
+            r = refs.get(x, {}).get(t)
+            if r is None:
+                return None
+            total += r
+        return total
+
+    def _counted_values(self, zone, t, call_id) -> dict | None:
+        """Per agent in the zone at t for the call: nominated net v, 1p reference ref, relief, counted net, firm and
+        counted relief, after the portfolio factor and the contingency caps. None if any agent has no value."""
+        from exchange import proven as _P
+        cfg = self.proven_cfg
+        rows = {}
+        for aid, a in self.agents.items():
+            if zone not in a["zones"].values() or aid in self.inactive:
+                continue
+            v = self._nom_or_ref(aid, call_id, t)
+            if v is None:
+                return None
+            ref = self._ref_net(aid, call_id, t)
+            idle = self._idle_net(aid, call_id, t)
+            st = self.proven_state.get(aid)
+            if ref is None or idle is None or st is None:
+                rows[aid] = {"v": v, "ref": ref, "idle": idle, "relief": None, "c": None, "f": 0.0}
+                continue
+            r = v - ref
+            mx, mf = _P.ceilings(ref, idle, st, cfg)
+            rows[aid] = {"v": v, "ref": ref, "idle": idle, "relief": r, "c": _P.counted(r, mx, st),
+                         "f": _P.firm(r, mf, st)}
+        unproven = {aid: max(0.0, x["c"] - x["f"]) for aid, x in rows.items() if x["c"] is not None and x["c"] > 0}
+        rates = {aid: _P.rate(self.proven_state[aid]) for aid in unproven}
+        k = _P.portfolio_scale(unproven, rates, cfg.budget_kw)
+        pos = {}
+        for aid, x in rows.items():
+            if x["c"] is not None and x["c"] > 0:
+                if k < 1.0:      # rescale only when the budget binds: f + 1.0 x (c - f) is not c in floating point
+                    x["c"] = x["f"] + k * unproven[aid]
+                pos[aid] = x["c"]
+        ent = {aid: self.agents[aid]["legal_entity"] for aid in pos}
+        caps = _P.contingency_scale(pos, ent, cfg.reserve_kw)
+        for aid, x in rows.items():
+            if aid in caps and caps[aid] < 1.0:
+                x["c"] *= caps[aid]
+                x["f"] *= caps[aid]
+            x["counted"] = x["v"] if x["c"] is None else _P.counted_net(x["v"], x["ref"], x["c"])
+        # expected shortfall from unproven capacity after both caps (the portfolio budget's measure, report only)
+        self._last_es_kw = sum(max(0.0, x["c"] - x["f"]) * (1.0 - _P.rate(self.proven_state[aid]))
+                               for aid, x in rows.items() if x["c"] is not None and x["c"] > 0)
+        return rows
 
     def _gate_open(self, need, msg):
         if need["status"] != "open" or msg["t_utc"] >= need["gate_utc"]:
@@ -612,6 +718,8 @@ class Exchange:
             self.asset_owner[x] = aid
             self.unheld_at_gate[x] = (self.unheld_at_gate.get(x, frozenset())
                                       | (closed - self._closed_at_release.get(x, frozenset())))
+        if self.proven_cfg is not None:
+            self._proven_init(aid)
         if self.zonebook is not None:
             rows = {x: {k: e.rows[x] for k, e in self.zonebook.elements.items() if x in e.rows}
                     for x in self.agents[aid]["assets"]}
@@ -742,6 +850,9 @@ class Exchange:
             self.attested[p["asset_id"]] = {"owner": owner, "agent_id": agent}
         self.limits[p["asset_id"]] = {"usable_kwh": float(p["usable_kwh"]), "power_kw": float(p["power_kw"]),
                                       "pv_kwh_per_day": float(p["pv_kwh_per_day"])}
+        for k in ("asset_type", "nameplate_kw", "history_days"):      # proven capacity: attested by the metering only
+            if k in p:
+                self.limits[p["asset_id"]][k] = p[k]
         return []
 
     def _on_reference_net(self, msg):
@@ -1041,11 +1152,61 @@ class Exchange:
         if not (isinstance(kw, list) and len(kw) == len(call["_steps"])
                 and all(isinstance(v, (int, float)) and v == v and abs(v) != float("inf") for v in kw)):
             raise Reject("bad_message", "kw must be finite numbers, one per step", steps=len(call["_steps"]))
+        if self.nomination_power_check:
+            self._check_nomination_power(aid, call, kw)
         self._add_nom(aid, call["call_id"], dict(zip(call["_steps"], map(float, kw))))
         pend = self.pending_prep.get(aid)
         if pend:            # the new nomination already includes the agent's awarded prep for these steps
             for t in call["_steps"]:
                 pend.pop(t, None)
+        return []
+
+    NOMINATION_POWER_TOL_KW = 0.01         # nominations are sent rounded to the watt
+
+    def _granted_power_kw(self, aid) -> float:
+        """min(mandate max_kw, the metering service's demonstrated power_kw summed over the agent's assets)."""
+        reg = float(self.agents[aid]["mandate"]["max_kw"])
+        lim = [self.limits.get(x) for x in self.agents[aid]["assets"]]
+        return reg if any(v is None for v in lim) else min(reg, sum(float(v["power_kw"]) for v in lim))
+
+    def _check_nomination_power(self, aid, call, kw):
+        """Q-N10: refuse relief above granted power on any step (export side), against the battery-idle site net."""
+        refs = self.call_idle.get(call["call_id"], {})
+        idle = [0.0] * len(call["_steps"])
+        for x in self.agents[aid]["assets"]:
+            r = refs.get(x)
+            if r is None:
+                raise Reject("over_power_nomination", "no battery-idle reference on record for this call",
+                             call_id=call["call_id"], max_kw=self._granted_power_kw(aid), steps_over=0)
+            idle = [a + r[t] for a, t in zip(idle, call["_steps"])]
+        cap = self._granted_power_kw(aid)
+        over = sum(1 for v, b in zip(kw, idle) if float(v) - b > cap + self.NOMINATION_POWER_TOL_KW)
+        if over:
+            raise Reject("over_power_nomination", "nominated relief above granted power", call_id=call["call_id"],
+                         max_kw=cap, steps_over=over)
+
+    def _on_idle_reference(self, msg):
+        """Q-N10: the battery-idle site net (kW, + = export) of an asset over one call's window, from the metering
+        service only, once per call and asset, under nomination_power_check only."""
+        self._only(msg, self.metering_id, "idle_reference")
+        if not (self.nomination_power_check or self.proven_cfg is not None):
+            raise Reject("bad_message", "idle_reference is used only with nomination_power_check or proven_capacity")
+        p = msg["payload"]
+        if p["asset_id"] not in self.asset_owner:
+            raise Reject("bad_message", "unknown asset", field="asset_id")
+        call = self.calls.get(p["call_id"])
+        if call is None:
+            raise Reject("bad_message", "unknown call", call_id=p["call_id"])
+        if p["window"] != call["window"]:
+            raise Reject("bad_message", "window must be the call's window", call_id=p["call_id"])
+        if p["asset_id"] in self.call_idle.get(p["call_id"], {}):
+            raise Reject("bad_message", "an idle reference is never revised", call_id=p["call_id"])
+        kw = p["net_kw"]
+        if not (isinstance(kw, list) and len(kw) == len(call["_steps"])
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool) and v == v
+                        and abs(v) != float("inf") for v in kw)):
+            raise Reject("bad_message", "net_kw must be finite numbers, one per step", steps=len(call["_steps"]))
+        self.call_idle.setdefault(p["call_id"], {})[p["asset_id"]] = dict(zip(call["_steps"], map(float, kw)))
         return []
 
     def _add_nom(self, aid, call_id, values: dict[str, float]):
@@ -1087,12 +1248,98 @@ class Exchange:
                 if self.settlement_rule == "max_first_call":
                     self.call_nom.setdefault(call["call_id"], {})[aid] = {
                         t: v for t, v in zip(call["_steps"], vals) if v is not None}
+        if self.proven_cfg is not None:      # the operator's aggregate counts proven capacity; the base stays raw
+            snap = {}
+            for i, t in enumerate(call["_steps"]):
+                cv = self._counted_values(call["zone"], t, call["call_id"])
+                if cv is None:
+                    continue
+                s = 0.0          # a plain += in the flag-off order (sum() compensates; see _zone_load)
+                for x in cv.values():
+                    s += x["counted"]
+                total[i] = s
+                snap[t] = {aid: {"v": x["v"], "ref": x["ref"], "idle": x["idle"], "c": x["c"], "f": x["f"]}
+                           for aid, x in cv.items()}
+                snap[t]["_es_kw"] = self._last_es_kw
+            if call["binding"]:
+                self.proven_snap[call["call_id"]] = snap
         call["aggregated"] = True
         if self.price_mode:
             self._close_price_gate(call, now)
         payload = {"call_id": call["call_id"], "zone": call["zone"], "window": call["window"], "kw": total,
                    "n_agents": n, "binding": call["binding"]}
         return self._msg("nomination_aggregate", self.operator_id, now, payload)
+
+    def _proven_update(self, call, now):
+        """After a binding call's window: per agent, nominated vs metered relief against the 1p reference updates its
+        proven capacity and delivery rate; per step, the fleet's counted, firm and delivered relief and the uncovered
+        shortfall (counted minus delivered, kW). Two detection times per miss: the first missed step (the meter shows
+        it there) and `now` (the exchange's record updates here)."""
+        from exchange import proven as _P
+        snap = self.proven_snap.pop(call["call_id"], None)
+        if not snap:
+            return
+        cfg = self.proven_cfg
+        per: dict = {}
+        for t in call["_steps"]:
+            row = snap.get(t)
+            if row is None:
+                continue
+            fleet = {"counted_kw": 0.0, "firm_kw": 0.0, "delivered_kw": 0.0, "delivered_firm_kw": 0.0,
+                     "expected_shortfall_unproven_kw": row.get("_es_kw", 0.0)}
+            for aid, x in row.items():
+                if aid == "_es_kw":
+                    continue
+                if x["c"] is None or x["ref"] is None:
+                    continue
+                # only steps whose binding base is this call's (as _imbalance): a later binding call that took a step
+                # over is judged there; the promise is the base in force, which is what delivery follows
+                b = self.baseline.get(aid, {}).get(t)
+                if b is None or b[1] != call["call_id"] or not self._holds(aid, t):
+                    continue
+                x = {**x, "v": b[0]}
+                met = self._metered(aid).get(t)
+                nr = max(0.0, x["v"] - x["ref"])
+                band = band_kw(self.agents[aid]["mandate"]["max_kw"], self.band_pct, self.band_min_kw)
+                # delivered within the D33 band counts as delivered (as D65's record); beyond it, the metered relief
+                dr = 0.0 if met is None else (nr if abs(met - x["v"]) <= band else max(0.0, met - x["ref"]))
+                d = per.setdefault(aid, {"nom": 0.0, "met": 0.0, "peak": 0.0, "miss_t": None})
+                d["nom"] += nr * self.step_h
+                d["met"] += min(dr, nr) * self.step_h
+                if met is not None and x["idle"] is not None:     # the battery's own metered export
+                    d["peak"] = max(d["peak"], met - x["idle"])
+                if nr > 0 and dr < nr * (1.0 - cfg.clean_tol):
+                    if d["miss_t"] is None:
+                        d["miss_t"] = t
+                    self.proven_misses.append({"call_id": call["call_id"], "agent_id": aid, "t_utc": t,
+                                               "nominated_kw": x["v"], "reference_kw": x["ref"],
+                                               "idle_kw": x["idle"], "metered_kw": met, "band_kw": band})
+                fleet["counted_kw"] += max(0.0, x["c"])
+                fleet["firm_kw"] += max(0.0, x["f"])
+                fleet["delivered_kw"] += min(dr, max(0.0, x["c"]))
+                fleet["delivered_firm_kw"] += min(dr, max(0.0, x["f"]))
+            fleet["uncovered_kw"] = max(0.0, fleet["counted_kw"] - fleet["delivered_kw"])
+            fleet["call_id"] = call["call_id"]
+            self.proven_steps[t] = fleet
+        for aid, d in per.items():
+            st = self.proven_state[aid]
+            new = _P.update(st, d["nom"], d["met"], d["peak"], cfg)
+            self.proven_state[aid] = new
+            self.proven_events.append({
+                "call_id": call["call_id"], "agent_id": aid, "record_t_utc": now, "first_miss_t_utc": d["miss_t"],
+                "nominated_kwh": d["nom"], "metered_kwh": d["met"], "proven_kw_before": st.proven_kw,
+                "proven_kw_after": new.proven_kw, "rate_before": _P.rate(st), "rate_after": _P.rate(new),
+                "new_after": new.new})
+
+    def proven_report(self) -> dict | None:
+        """Proven capacity's run record (report only; the summary and bench/firmness.py read it)."""
+        if self.proven_cfg is None:
+            return None
+        from exchange import proven as _P
+        return {"config": self.config["proven_capacity"], "events": self.proven_events, "steps": self.proven_steps,
+                "misses": self.proven_misses,
+                "final": {aid: {"proven_kw": s.proven_kw, "rate": _P.rate(s), "new": s.new,
+                                "clean_calls": s.clean_calls} for aid, s in self.proven_state.items()}}
 
     def _settles(self, t: str) -> bool:
         """Warm-up: money counts only from settle_from_utc on (all steps when it is unset)."""
@@ -1174,6 +1421,8 @@ class Exchange:
                 if (call["binding"] and call["aggregated"] and not call["imbalance_done"]
                         and call["window"]["end_utc"] <= now and (final or not self.no_rebound)):
                     out += self._imbalance(call, now, reb)
+                    if self.proven_cfg is not None:
+                        self._proven_update(call, now)
             if reb or (self.no_rebound and final and not self.rebound_done):
                 out += self._rebound(now, reb)
         if self.declared_reference and final and not self.void_done:
@@ -1433,6 +1682,12 @@ class Exchange:
         agg = [self._zone_load(zone, t, call["call_id"]) for t in steps]
         loads = {aid: [-(self._nom_or_ref(aid, call["call_id"], t) or 0.0) for t in steps]
                  for aid in self._zone_agents(zone)}
+        if self.proven_cfg is not None:      # counted values where they exist; flag-off values everywhere else
+            for i, t in enumerate(steps):
+                cv = self._counted_values(zone, t, call["call_id"])
+                for aid, x in (cv or {}).items():
+                    if aid in loads:
+                        loads[aid][i] = -x["counted"]
         return steps, agg, [tgt[t] for t in steps], loads
 
     def _measure(self, steps, agg, target, loads, prev):

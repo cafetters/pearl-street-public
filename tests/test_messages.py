@@ -40,6 +40,7 @@ GOOD = {
     "reference_net": {"asset_id": "a", "window": WIN, "net_kw": [1.0, -2.0, 0.0, 3.0]},
     "peak_settle": {"window": WIN, "steps": 2, "charge_usd": 1.0, "refund_usd": 0.5, "net_usd": -0.5},
     "selfish_reference": {"asset_id": "a", "call_id": "c", "window": WIN, "net_kw": [1.0, -2.0, 0.0, 3.0]},
+    "idle_reference": {"asset_id": "a", "call_id": "c", "window": WIN, "net_kw": [1.0, -2.0, 0.0, 3.0]},
     "modeled_response": {"asset_id": "a", "call_id": "c", "window": WIN, "p_net_kw": [1.0, -2.0, 0.0, 3.0],
                          "p_discharge_kw": [1.0, 0.0, 0.0, 3.0], "p_soc_end_kwh": 5.0,
                          "q_net_kw": [0.0, -2.0, 0.0, 2.0], "q_discharge_kw": [0.0, 0.0, 0.0, 2.0],

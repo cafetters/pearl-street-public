@@ -44,6 +44,10 @@ def wrap_attacker(spec: dict, agent, cfg: dict):
     if kind == "replay":                    # M5: a red-team catalog entry replayed through the gateway
         from attacks.replay import wrap_replay
         return wrap_replay(agent, spec, cfg)
+    if kind == "over_nominate":             # M5 firmness (owner, Nov 19): promises relief beyond its power
+        from attacks.over_nominate import OverNominator
+        return OverNominator(agent, factor=float(spec.get("factor", 3.0)),
+                             extra_kw=None if spec.get("extra_kw") is None else float(spec["extra_kw"]))
     if kind == "round_liar":                # M4 REP comparison (D24): misreports in non-binding price rounds only
         from attacks.round_liar import RoundLiar
         return RoundLiar(agent, mode=str(spec.get("mode", "overstate")))

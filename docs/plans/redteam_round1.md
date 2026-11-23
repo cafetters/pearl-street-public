@@ -81,10 +81,22 @@ with the catalog.
     - the largest loss against the twin is $0.3526 in both;
     - 13 agents are below their twins in both, for a total of $1.5278 [sim, in-run].
   - Script: `runs/m5/real_trace_triage.py`. Output: `runs/m5/real_trace_triage.json`.
-- **Not yet on a real trace:**
-  - `redteam/rounds.py`'s confirmation and ablation;
-  - the injection measure (`injection_check`), which needs a real run with LLM victims and a recorded cache.
-  - Both stay report-only until they have run on one.
+- **`redteam/rounds.py`'s confirmation, ablation, D104's class and the per-defense check: run on one real-data world
+  (Nov 19).**
+  - The world: D61 v2's dec11 twin config (a used window, 80 agents), the fake backend, DC_08 over-registering 3x
+    against today's exchange on purpose; Maritime, queue `rt-real-dec11`, commit `38cbb90`, $0.03
+    (`configs/redteam_checks/`).
+  - The replay reproduced the run.
+  - The ablation control gave DC_08 −$1,191.75 attributable to the claim, and harm attributable to it at 79 honest
+    agents, up to $95.32 each. D104's rule classed it an exploit [sim, in-run].
+  - Per defense alone:
+    - the gateway grant blocked it;
+    - `register_power_check` blocked it at registration (the run stops, rt-0001's class; D101 will change that);
+    - **`reference_power_cap` alone did not block it:** DC_08 still gained $2,038.50 attributable to the
+      over-claim. The cause is not yet shown. Hypothesis: the D33 band and other mandate uses still read the
+      registered `max_kw`. Under D102's defaults the register check refuses the claim first.
+- **Not yet on a real trace:** the injection measure (`injection_check`), which needs a real run with LLM victims and a
+  recorded cache. It stays report-only until it has run on one.
 
 ## Injection sub-round (D70)
 
@@ -120,9 +132,8 @@ with the catalog.
 
 ## Prerequisites before this becomes a pre-registration
 
-1. **A real-data world in the harness.** It is built (`world.config`: a run config's window, roster and settings, read
-   in place) and tested with a stub loader. It has never run on real data. One run is needed, and real-data catalog
-   entries are written beside the round, never to `attacks/catalog/`.
+1. **A real-data world in the harness.** Done (Nov 19: dec11, above). Real-data catalog entries are written beside
+   the round, never to `attacks/catalog/`.
 2. **The real-trace runs** of the new checks that haven't had one (above: confirmation and ablation; the injection
    measure).
 3. **Spend:**

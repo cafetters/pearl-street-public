@@ -480,6 +480,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
         silent_reference=bool(cfg.get("silent_reference", False)),    # D78/D79 (off by default)
         declared_reference=bool(cfg.get("declared_reference", False)),  # D80/D81 (off by default; one flag)
         register_power_check=bool(cfg.get("register_power_check", True)),    # M5, D-a: on by default
+        nomination_power_check=bool(cfg.get("nomination_power_check", False)),  # Q-N10 (off by default)
+        proven_capacity=cfg.get("proven_capacity"),                   # owner, Nov 19 (Leaning; off unless set)
         **({"settle_from_utc": window_start_utc} if window_start_utc is not None else {}),   # warm-up (off)
         **({"guarantee": True, "guarantee_wear_usd_mwh": float(cfg["wear_usd_mwh"])}
            if headroom_mw is not None and cfg.get("d62_guarantee") else {}),
@@ -604,6 +606,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                 raise
     C, D, X, SOC = (np.zeros((n, T)) for _ in range(4))
     n_meter = 0
+    idle_sent: set = set()          # Q-N10: calls whose idle references the metering service has sent
+    n_idle = 0                      # their own id sequence, so every other metering msg_id is unchanged
     for k in range(T):
         t = iso[k]
         if k == 0:
@@ -614,9 +618,18 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                         mid = f"{cfg['metering_id']}:{n_meter}"
                     else:          # own id sequence: every other message keeps the id it had before D69
                         mid = f"{cfg['metering_id']}:owner{j + 1}"
-                    meter_send([M.encode(M.make("asset_limits", cfg["metering_id"], "exchange", t, {
-                        "asset_id": ag.asset_id, "usable_kwh": float(usable[j]), "power_kw": float(fleet.P[j]),
-                        "pv_kwh_per_day": float(demo_pv[j]), "owner": ag.legal_entity, "agent_id": ag.id},
+                    lim = {"asset_id": ag.asset_id, "usable_kwh": float(usable[j]), "power_kw": float(fleet.P[j]),
+                           "pv_kwh_per_day": float(demo_pv[j]), "owner": ag.legal_entity, "agent_id": ag.id}
+                    if cfg.get("proven_capacity"):
+                        # proven capacity: the metering service attests the type, and for a newcomer (no meter
+                        # history) its paperwork: nameplate and power_kw are the attested paper kW (a liar's paper
+                        # can exceed its battery; `newcomers: {id: {paper_kw}}`, scenario config)
+                        lim["asset_type"] = "bess"
+                        nc = (cfg.get("newcomers") or {}).get(ag.id)
+                        if nc is not None:
+                            paper = float(nc.get("paper_kw", fleet.P[j]))
+                            lim.update(history_days=0, nameplate_kw=paper, power_kw=paper)
+                    meter_send([M.encode(M.make("asset_limits", cfg["metering_id"], "exchange", t, lim,
                         mid, run_id))])
                 bus.flush()
             if ex and fl["price_mode"]:      # D53 refund reference: each agent's recorded site net (dataset schedule)
@@ -655,8 +668,27 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                                               f"clock:{k}.{sub}", run_id))])
                     bus.flush()
                     judge(n_before)
+        n_op = len(bus.log)
         if op:
             bus.send(op.act(k, fc_op), op.id)
+            bus.flush()
+        if ex and (ex.nomination_power_check or ex.proven_cfg is not None):   # Q-N10 / proven capacity: idle net
+            for m in bus.log[n_op:]:
+                if m["msg_type"] != "call_nominations" or m["sender"] != "exchange":
+                    continue
+                c = m["payload"]
+                if c["call_id"] in idle_sent:
+                    continue
+                idle_sent.add(c["call_id"])
+                w = c["window"]
+                a0 = iso.index(w["start_utc"])
+                a1 = T if w["end_utc"] == end_iso else iso.index(w["end_utc"])
+                for j, ag in enumerate(agents):
+                    n_idle += 1
+                    meter_send([M.encode(M.make("idle_reference", cfg["metering_id"], "exchange", t, {
+                        "asset_id": ag.asset_id, "call_id": c["call_id"], "window": w,
+                        "net_kw": [float(x) for x in base_x[j][a0:a1]]}, f"{cfg['metering_id']}:idle{n_idle}",
+                        run_id))])
             bus.flush()
         v, pf = prices.at(k)
         req = np.zeros((3, n))
@@ -790,6 +822,9 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
     if bus.refused:          # D69: refused messages (forged sender, direct delivery, malformed), outside the summary
         with open(out_dir / variant / "refused.json", "w", encoding="utf-8") as f:
             json.dump(bus.refused, f, indent=1)
+    if ex is not None and ex.proven_cfg is not None:     # proven capacity's run record, next to the trace
+        with open(out_dir / variant / "proven.json", "w", encoding="utf-8") as f:
+            json.dump({"header": header, **ex.proven_report()}, f, indent=1, default=str)
     if strat is not None:      # M4: the call log sits next to the trace, with the run's id, config, seed and commit
         strat.write_sidecar(out_dir / variant / "llm_calls.jsonl", header)
     margin_log = [{"agent": ag.id, **e} for ag in agents for e in ag.margin_log]

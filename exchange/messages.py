@@ -51,6 +51,8 @@ REQUIRED = {
     "peak_settle": ("window", "steps", "charge_usd", "refund_usd", "net_usd"),
     # D56: rule 1p's refund reference for one binding call (metering service only)
     "selfish_reference": ("asset_id", "call_id", "window", "net_kw"),
+    # Q-N10 (owner, Nov 19; under nomination_power_check): the battery-idle site net for one call (metering only)
+    "idle_reference": ("asset_id", "call_id", "window", "net_kw"),
     # D62 (Leaning): the modeled response and acting-alone paths for one binding call's stage, the relayed real-time
     # prices, and the per-agent accrual the exchange sends at the closing tick
     "modeled_response": ("asset_id", "call_id", "window", "p_net_kw", "p_discharge_kw", "p_soc_end_kwh", "q_net_kw",
@@ -77,7 +79,8 @@ EXCHANGE_TYPES = {"award", "suspend", "settle", "reject", "nomination_aggregate"
 REJECT_CODES = ("outside_mandate", "over_demonstrated_limit", "already_sold", "after_gate_closure",
                 "not_registered", "unauthorized_sender", "bad_message",
                 "sender_mismatch", "direct_delivery", "malformed",       # these three: bus refusals (refusal_notice)
-                "infeasible_declaration")                                # D82, under declared_reference only
+                "infeasible_declaration",                                # D82, under declared_reference only
+                "over_power_nomination")                                 # Q-N10, under nomination_power_check
 
 WINDOW_KEYS = ("start_utc", "end_utc")
 
@@ -205,11 +208,13 @@ SPEC = {
     "nominate": ({"call_id": _I, "zone": _I, "window": _W, "kw": _L}, {}),
     "zone_target": ({"zone": _I, "window": _W, "target_kw": _L}, {}),
     "asset_limits": ({"asset_id": _I, "usable_kwh": _N, "power_kw": _N, "pv_kwh_per_day": _N},
-                     {"owner": _text, "agent_id": _I}),
+                     {"owner": _text, "agent_id": _I,
+                      "asset_type": _I, "nameplate_kw": _N, "history_days": _int}),   # proven capacity (optional)
     "reference_net": ({"asset_id": _I, "window": _W, "net_kw": _L}, {}),
     "selfish_reference": ({"asset_id": _I, "call_id": _I, "window": _W, "net_kw": _L},
                           {"net_kw_registered": _L,            # D81, under declared_reference only
                            "declarations_void": _bool}),        # D82's backstop, under declared_reference only
+    "idle_reference": ({"asset_id": _I, "call_id": _I, "window": _W, "net_kw": _L}, {}),
     "modeled_response": ({"asset_id": _I, "call_id": _I, "window": _W, "p_net_kw": _L, "p_discharge_kw": _L,
                           "p_soc_end_kwh": _N, "q_net_kw": _L, "q_discharge_kw": _L, "q_soc_end_kwh": _N}, {}),
     "rt_price": ({"window": _W, "rt_usd_mwh": _L, "end_energy_usd_kwh": _N}, {}),
