@@ -16,7 +16,7 @@ DEFAULT_EFFORT, DEFAULT_MAX_TOKENS = "low", 2048
 RATIONALE_MAX = 300
 
 
-def make_backend(name: str):
+def make_backend(name: str, route: str = "direct"):
     if name == "fake":
         return FakeBackend()
     if name.startswith("fake_random:"):        # nondeterministic on purpose (tests the shared cache, D95)
@@ -24,6 +24,9 @@ def make_backend(name: str):
     if name.startswith("fake_adversarial:"):
         return FakeAdversarial(name.split(":", 1)[1])
     if name == "live":
+        if route == "course":           # the course's LLM gateway; resolves its config now (fails before the run)
+            from agents.llm.course_route import CourseRoute
+            return CourseRoute()
         from agents.llm.live import LiveBackend
         return LiveBackend()
     raise ValueError(f"llm_strategy.backend: unknown backend {name!r} (fake, fake_adversarial:<mode>, live)")
@@ -33,7 +36,10 @@ class LLMRun:
     def __init__(self, spec: dict, *, roster, attackers, seed, run_id, power_kw):
         self.spec, self.roster, self.run_id = spec, list(roster), run_id
         self.backend_name = str(spec.get("backend", "fake"))
-        self.backend = make_backend(self.backend_name)
+        self.route = str(spec.get("route", "direct"))
+        if self.route not in SP.ROUTES:
+            raise ValueError(f"llm_strategy.route: unknown route {self.route!r} (one of {SP.ROUTES})")
+        self.backend = make_backend(self.backend_name, self.route)
         self.live = self.backend_name == "live"
         self.honest = spec.get("honest_models") or AS.DEFAULT_HONEST
         self.attacker = spec.get("attacker_models") or AS.DEFAULT_ATTACKER
@@ -42,7 +48,7 @@ class LLMRun:
         self.cache = ResponseCache(c.get("path"), str(c.get("mode", "off")))
         if "cap_usd_run" not in spec:
             raise ValueError("llm_strategy: an LLM chooser needs cap_usd_run (D94, fail closed)")
-        self.spend = SP.SpendGuard(float(spec["cap_usd_run"]), live=self.live)
+        self.spend = SP.SpendGuard(float(spec["cap_usd_run"]), live=self.live, route=self.route)
         self.effort = str(spec.get("effort", DEFAULT_EFFORT))
         self.max_tokens = int(spec.get("max_tokens", DEFAULT_MAX_TOKENS))
         self.calls: list[dict] = []
@@ -56,6 +62,7 @@ class LLMRun:
 
     def header(self) -> dict:
         return {"models": AS.header_block(self.honest, self.attacker, self.draws), "backend": self.backend_name,
+                "route": self.route,
                 "cache": {"path": None if self.cache.path is None else str(self.cache.path), "mode": self.cache.mode,
                           "sha256_at_open": self.cache.sha256_at_open},
                 "cap_usd_run": self.spend.cap, "phase": self.spec.get("phase"),
@@ -92,7 +99,16 @@ class LLMRun:
             by_day[r["decision_day"]] += usd
             total += usd
         n_days = max(len(days), 1)
-        return {"llm_calls": n_calls, "tokens_in": tin, "tokens_out": tout, "usd_total": total,
+        billed = [r for r in self.calls if r.get("sent") and not r.get("cache_hit")]
+        gaps = [abs((r.get("usd_reported") or 0.0) - (r.get("usd_table") or 0.0)) for r in billed
+                if r.get("usd_reported") is not None and r.get("usd_table") is not None]
+        cost = {"route": self.route, "usd_reported_total": sum(r.get("usd_reported") or 0.0 for r in billed),
+                "usd_table_total": sum(r.get("usd_table") or 0.0 for r in billed),
+                "tokens_cache_write": sum(r.get("tokens_cache_write") or 0 for r in billed),
+                "tokens_cache_read": sum(r.get("tokens_cache_read") or 0 for r in billed),
+                "cost_header_missing": sum(1 for r in billed if r.get("cost_header_missing")),
+                "max_cost_gap_usd": max(gaps, default=0.0), "cost_over_table": self.spend.over_table}
+        return {**cost, "llm_calls": n_calls, "tokens_in": tin, "tokens_out": tout, "usd_total": total,
                 "simulated_days": len(days), "usd_per_simulated_day": total / n_days,
                 "usd_by_day": dict(by_day), "by_model": {k: dict(v) for k, v in by_model.items()},
                 "by_model_note": "report only: model is mixed with site (D93)",
@@ -141,11 +157,24 @@ class LLMChooser:
             return done(Decision(label=None, source="llm", reason=reason, error="cache_miss"))
         except Exception as e:                  # noqa: BLE001  fail closed: keep the previous label
             code = getattr(e, "code", None)
+            code = code if isinstance(code, str) else None       # an HTTP error's code is an int, not ours
             return done(Decision(label=None, source="llm", reason=reason,
                                  error=code or f"backend_exception:{type(e).__name__}"))
         usd = run.spend.record(req, resp, hit)
+        meta = {} if hit else (getattr(resp, "meta", None) or {})
+        try:
+            usd_table = 0.0 if hit else SP.cost_usd(model_id, resp.input_tokens or 0, resp.output_tokens or 0,
+                                                    resp.cache_write_tokens or 0, resp.cache_read_tokens or 0)
+        except SP.PriceMissing:
+            usd_table = None
         rec.update(sent=not hit, cache_hit=hit, tokens_in=0 if hit else resp.input_tokens,
-                   tokens_out=0 if hit else resp.output_tokens, usd=usd, stop=resp.stop_reason)
+                   tokens_out=0 if hit else resp.output_tokens, usd=usd, stop=resp.stop_reason,
+                   tokens_cache_write=0 if hit else (resp.cache_write_tokens or 0),
+                   tokens_cache_read=0 if hit else (resp.cache_read_tokens or 0),
+                   usd_table=usd_table, usd_reported=0.0 if hit else meta.get("reported_usd"),
+                   request_id=None if hit else meta.get("request_id"),
+                   attempts=0 if hit else len(meta.get("attempts") or [None]),
+                   cost_header_missing=False if hit else bool(meta.get("cost_header_missing")))
         if resp.stop_reason == "refusal":
             return done(Decision(label=None, source="llm", reason=reason, error="refusal"))
         if resp.stop_reason == "error":

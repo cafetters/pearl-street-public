@@ -819,6 +819,30 @@ def check_cache_stages(cfgs) -> None:
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def course_route_env(runs) -> dict:
+    """Course route (owner, Nov 23): when a config sets llm_strategy.route: course, the four neutral variables of
+    agents/llm/course_route.py are read from the local config and key and passed like --secret-env values (the run
+    stage's HTTPS body only). Every identifier string (the values, the address's host, the key variable's name) is
+    registered for scrubbing first, as written and in lower and upper case. Fails closed with a neutral message."""
+    names = [r["name"] for r in runs if str((r["cfg"].get("llm_strategy") or {}).get("route", "direct")) == "course"]
+    if not names:
+        return {}
+    from agents.llm import course_route as CR
+    try:
+        env, terms = CR.launcher_env()
+    except CR.RouteConfigMissing as e:
+        raise QueueError(f"route: course in {names}: {e}") from None
+    for v in [*env.values(), *terms]:
+        for x in (v, v.lower(), v.upper()):
+            if x and x not in _SECRET_VALUES:
+                _SECRET_VALUES.append(x)
+    _SECRET_VALUES.sort(key=len, reverse=True)          # longest first, so an address goes before its host
+    for n, v in env.items():
+        if CMD_META.search(v) or any(c.isspace() for c in v):
+            raise QueueError(f"route: course: {n} has a cmd.exe metacharacter or whitespace (value not shown)")
+    return env
+
+
 def check_secret_env(names) -> dict:
     """Keys reach a sandbox only as runtime environment variables, never in an uploaded file, config or log (D96).
     Method (confirmed Nov 12 with dummy non-secret values, owner decision 6): the run stage only, started with an `env`
@@ -1594,6 +1618,7 @@ def main(argv=None):
             args.concurrency = min(len(runs), CAP_LLM if args.llm else args.max_awake)
         check_caps(args, runs)
         secret_env = check_secret_env(args.secret_env)
+        secret_env.update(course_route_env(runs))         # course route: neutral names, values scrubbed everywhere
         report["secret_env"] = sorted(secret_env)          # names only
         if secret_env and args.cli_polls:
             raise QueueError("--secret-env needs the API path (values go in an HTTPS body); drop --cli-polls")

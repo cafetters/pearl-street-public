@@ -1,5 +1,5 @@
 """Price table (owner decision 6, Nov 12): each row carries the provider's pricing-page URL and the date it was checked;
-gpt-6-luna is priced but refused for live calls until the owner confirms the OpenAI key route (D96)."""
+gpt-6-luna is priced; live calls to it only on the course route (owner, Nov 23), refused on the direct route (D96)."""
 import pytest
 
 from agents.llm import spend as SP
@@ -37,9 +37,10 @@ def test_long_context_tiers_use_each_rows_own_threshold():
     assert SP.cost_usd("anthropic/claude-sonnet-5-5", 900_000, 0) == pytest.approx(900_000 * 2.00 / 1e6)
 
 
-def test_luna_is_refused_live_but_runs_on_the_fake_backend():
+def test_luna_is_refused_live_on_the_direct_route_but_runs_on_the_fake_backend_and_the_course_route():
     with pytest.raises(SP.LiveRefused):
         SP.SpendGuard(5.0, live=True).authorize(_Req("openai/gpt-6-luna", 1000, 512))
+    SP.SpendGuard(5.0, live=True, route="course").authorize(_Req("openai/gpt-6-luna", 1000, 512))
     assert issubclass(SP.LiveRefused, SP.PriceMissing)       # every existing fail-closed path still catches it
     SP.SpendGuard(5.0, live=False).authorize(_Req("openai/gpt-6-luna", 1000, 512))
     SP.SpendGuard(5.0, live=True).authorize(_Req("anthropic/claude-haiku-5-5", 1000, 512))

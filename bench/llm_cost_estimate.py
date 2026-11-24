@@ -202,6 +202,8 @@ def check_config(cfg: dict, n_agents: int = 80, prompt_tokens: int | None = None
     tin = prompt_tokens if prompt_tokens is not None else measured_prompt_tokens()
     mt = int(spec.get("max_tokens", DEFAULT_MAX_TOKENS))
     worst_pc, unpriced = 0.0, []
+    route = str(spec.get("route", "direct"))
+    tin_worst = int(math.ceil(tin * SP.WORST_INPUT_MULT.get(route, 1.0)))     # course route: every input a cache write
     lists = [spec.get("honest_models") or AS.DEFAULT_HONEST]
     if cfg.get("attackers"):
         lists.append(spec.get("attacker_models") or AS.DEFAULT_ATTACKER)
@@ -209,21 +211,26 @@ def check_config(cfg: dict, n_agents: int = 80, prompt_tokens: int | None = None
         for m in AS.check_list(lst):
             if m["weight"] <= 0:
                 continue
-            pc = _per_call(f"{m['provider']}/{m['model']}", tin, mt)
+            pc = _per_call(f"{m['provider']}/{m['model']}", tin_worst, mt)
             if pc is None:
                 unpriced.append(f"{m['provider']}/{m['model']}")
             else:
                 worst_pc = max(worst_pc, pc)
     if cad.escalate:
-        worst_pc = max(worst_pc, _per_call(CD.ESCALATE_MODEL, tin, mt))
+        worst_pc = max(worst_pc, _per_call(CD.ESCALATE_MODEL, tin_worst, mt))
     worst = n_llm * worst_calls(cad.preset, days) * worst_pc
     cap = spec.get("cap_usd_run")
     live = str(spec.get("backend", "fake")) == "live"
-    ok = cap is not None and worst <= float(cap) + 1e-12 and not (live and unpriced)
+    refused = sorted({f"{m['provider']}/{m['model']}" for lst in lists for m in AS.check_list(lst)
+                      if m["weight"] > 0 and f"{m['provider']}/{m['model']}" not in unpriced
+                      and not SP.live_allowed(f"{m['provider']}/{m['model']}", route)}) if live else []
+    ok = cap is not None and worst <= float(cap) + 1e-12 and not (live and unpriced) and not refused
     return {"ok": ok, "llm_agents": n_llm, "days": days, "preset": cad.preset, "prompt_tokens": tin,
             "max_tokens": mt, "worst_usd": worst, "cap_usd_run": cap, "unpriced_models": sorted(set(unpriced)),
+            "route": route, "refused_models": refused,
             "why": None if ok else ("no cap_usd_run" if cap is None else
                                     "live run with an unpriced model" if (live and unpriced) else
+                                    f"live run with a model refused on route {route}: {refused}" if refused else
                                     f"worst case ${worst:.4f} above the run cap ${float(cap):.4f}")}
 
 

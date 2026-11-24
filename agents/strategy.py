@@ -191,7 +191,7 @@ class StrategyAgent:
 CHOOSERS = ("fixed", "rule", "llm")
 SPEC_KEYS = {"chooser", "per_agent", "cadence", "bold_allowed", "honest_models", "attacker_models", "backend",
              "cache", "cap_usd_run", "phase", "cap_usd_phase", "size_gate", "escalate", "t4_threshold_usd_mwh",
-             "effort", "max_tokens", "reset", "fixed_label"}
+             "effort", "max_tokens", "reset", "fixed_label", "route"}
 
 
 class StrategyRun:

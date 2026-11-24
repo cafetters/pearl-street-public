@@ -7,7 +7,8 @@ miss is called and appended), and `replay` reads only (a miss is an error). Temp
 models, so identical prompts get identical answers only through this cache.
 
 Everything written passes redact() first: auth-like keys are dropped, key-shaped strings and the current values of
-the provider key variables are replaced.
+the provider key variables are replaced, and so is every course-route identifier (course_route.scrub_terms(): the
+gateway key, address, host, header names and key variable name, read at runtime), in any case.
 """
 from __future__ import annotations
 
@@ -31,7 +32,9 @@ class CacheMiss(Exception):
 
 
 def _secrets() -> list[str]:
-    return [v for v in (os.environ.get(k) for k in KEY_ENV) if v and len(v) >= 8]
+    from agents.llm.course_route import scrub_terms
+    out = [v for v in (os.environ.get(k) for k in KEY_ENV) if v and len(v) >= 8] + scrub_terms()
+    return sorted(dict.fromkeys(out), key=len, reverse=True)     # longest first, so a URL goes before its host
 
 
 def redact(obj, _secrets_list=None):
@@ -43,7 +46,7 @@ def redact(obj, _secrets_list=None):
     if isinstance(obj, str):
         s = obj
         for sec in secrets:
-            s = s.replace(sec, REDACTED)
+            s = re.sub(re.escape(sec), REDACTED, s, flags=re.IGNORECASE)
         if _KEYLIKE.fullmatch(s.strip()):
             return REDACTED
         return _KEYLIKE.sub(REDACTED, s)

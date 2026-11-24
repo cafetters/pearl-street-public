@@ -11,6 +11,25 @@ KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 TIMEOUT_S = 60.0
 
 
+def anthropic_body(req) -> dict:
+    """The Anthropic-style request body, shared by the direct adapter and the course route (same bytes either way)."""
+    out_cfg = {"effort": req.effort}
+    if req.schema:
+        out_cfg["format"] = {"type": "json_schema", "schema": req.schema}
+    return {"model": req.model, "max_tokens": req.max_tokens, "system": req.system,
+            "messages": [{"role": "user", "content": req.user}], "output_config": out_cfg}
+
+
+def openai_body(req) -> dict:
+    """The OpenAI-style request body, shared by the direct adapter and the course route."""
+    args = {"model": req.model, "max_completion_tokens": req.max_tokens,
+            "messages": [{"role": "system", "content": req.system}, {"role": "user", "content": req.user}]}
+    if req.schema:
+        args["response_format"] = {"type": "json_schema",
+                                   "json_schema": {"name": "posture", "schema": req.schema, "strict": True}}
+    return args
+
+
 class MissingKey(Exception):
     code = "missing_key"
 
@@ -32,11 +51,7 @@ def _anthropic(req, key, http_client):
         kw["http_client"] = http_client
     client = anthropic.Anthropic(**kw)
     try:
-        out_cfg = {"effort": req.effort}
-        if req.schema:
-            out_cfg["format"] = {"type": "json_schema", "schema": req.schema}
-        msg = client.messages.create(model=req.model, max_tokens=req.max_tokens, system=req.system,
-                                     messages=[{"role": "user", "content": req.user}], output_config=out_cfg)
+        msg = client.messages.create(**anthropic_body(req))
     except anthropic.APIError as e:
         return Response(text=None, input_tokens=0, output_tokens=0, stop_reason="error", error=type(e).__name__,
                         provider=req.provider, model=req.model)
@@ -58,12 +73,7 @@ def _openai(req, key, http_client):
         kw["http_client"] = http_client
     client = openai.OpenAI(**kw)
     try:
-        args = {"model": req.model, "max_completion_tokens": req.max_tokens,
-                "messages": [{"role": "system", "content": req.system}, {"role": "user", "content": req.user}]}
-        if req.schema:
-            args["response_format"] = {"type": "json_schema",
-                                       "json_schema": {"name": "posture", "schema": req.schema, "strict": True}}
-        r = client.chat.completions.create(**args)
+        r = client.chat.completions.create(**openai_body(req))
     except openai.APIError as e:
         return Response(text=None, input_tokens=0, output_tokens=0, stop_reason="error", error=type(e).__name__,
                         provider=req.provider, model=req.model)

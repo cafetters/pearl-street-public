@@ -54,6 +54,8 @@ class Response:
     provider: str = ""
     model: str = ""
     meta: dict = field(default_factory=dict)
+    cache_write_tokens: int = 0           # prompt tokens written to the provider's prompt cache (course route)
+    cache_read_tokens: int = 0            # prompt tokens read from it; input_tokens counts only the rest
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -61,7 +63,9 @@ class Response:
     @classmethod
     def from_dict(cls, d: dict) -> "Response":
         return cls(**{k: d.get(k) for k in ("text", "input_tokens", "output_tokens", "stop_reason", "error",
-                                              "provider", "model")}, meta=d.get("meta") or {})
+                                              "provider", "model")}, meta=d.get("meta") or {},
+                   cache_write_tokens=int(d.get("cache_write_tokens") or 0),
+                   cache_read_tokens=int(d.get("cache_read_tokens") or 0))
 
 
 class FakeBackend:

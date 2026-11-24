@@ -27,7 +27,8 @@ def test_price_table_rows_carry_source_and_date():
         assert row["source_url"] and row["checked"], mid       # verified Nov 12: tests/test_m4_prices.py
     assert SP.PRICES["anthropic/claude-haiku-5-5"]["in"] == 0.10
     assert SP.PRICES["anthropic/claude-haiku-5-5"]["long"] == {"in": 0.50, "out": 2.50}
-    assert SP.PRICES["openai/gpt-6-luna"]["live"] is False      # priced, live refused until the owner confirms (D96)
+    # luna: live only on the course route (owner, Nov 23); refused on the direct route (no OpenAI key, D96)
+    assert SP.live_allowed("openai/gpt-6-luna", "course") and not SP.live_allowed("openai/gpt-6-luna", "direct")
 
 
 def test_cost_uses_the_over_100k_tier():
