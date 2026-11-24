@@ -773,7 +773,7 @@ def check_phase(cfgs, phase_cap: float, phase_spent: float) -> float:
     for cfg in cfgs:
         if not llm_reasons(cfg):
             continue
-        cap = (cfg.get("llm_strategy") or {}).get("cap_usd_run")
+        cap = (cfg.get("llm_strategy") or {}).get("cap_usd_run", cfg.get("llm_cap_usd_run"))   # red-team form
         if cap is None:
             raise QueueError(f"{cfg.get('run_name')}: an LLM run needs llm_strategy.cap_usd_run (D94)")
         total += float(cap)
@@ -824,7 +824,8 @@ def course_route_env(runs) -> dict:
     agents/llm/course_route.py are read from the local config and key and passed like --secret-env values (the run
     stage's HTTPS body only). Every identifier string (the values, the address's host, the key variable's name) is
     registered for scrubbing first, as written and in lower and upper case. Fails closed with a neutral message."""
-    names = [r["name"] for r in runs if str((r["cfg"].get("llm_strategy") or {}).get("route", "direct")) == "course"]
+    names = [r["name"] for r in runs if str((r["cfg"].get("llm_strategy") or {}).get("route", r["cfg"].get(
+        "llm_route", "direct"))) == "course"]
     if not names:
         return {}
     from agents.llm import course_route as CR

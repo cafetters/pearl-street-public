@@ -1,0 +1,18 @@
+# Launcher config for exploratory red-team round 1a (python -m bench.cloud_queue ... --llm --module redteam.launch).
+run_name: rt1a_sep01
+data_dir: ../data
+start: 2023-09-01
+end: 2023-09-02
+slice_tz: America/Chicago
+m0_dir: runs/m0_sep01
+compare_to: none
+seed: 1
+llm_route: course
+llm_cap_usd_run: 2.0
+phase:
+  name: rt1a_sep01
+  cap_usd_phase: 2.0
+  catalog_dir: attacks/catalog          # the regression gate replays every known exploit first (no model calls)
+  write_catalog: false                  # a confirmed find goes beside the round, never into attacks/catalog
+  rounds:
+    - configs/redteam_live/rt1a_sep01_open.yaml

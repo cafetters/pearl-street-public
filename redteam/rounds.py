@@ -207,12 +207,18 @@ def run_round(rc: dict, out_dir: Path, backend_for, phase: PhaseAllocator | None
     from bench.runinfo import run_header
     if rc["type"] not in ROUND_TYPES:
         raise ValueError(f"round type must be one of {ROUND_TYPES}")
+    try:            # fail before any world runs or any model is called, not at triage (Nov 24: hf_jan12 attempt 1)
+        {k: float(v) for k, v in (rc.get("thresholds") or {}).items()}
+    except (TypeError, ValueError):
+        raise ValueError(f"thresholds must be numbers: {rc.get('thresholds')}") from None
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cat_dir = Path(catalog_dir or CATALOG_DIR)
     entries = catalog(cat_dir)
     report = {"header": run_header("redteam/rounds.py", rc, rc.get("seed", 1)), "round": rc["name"],
-              "type": rc["type"], "label": "[sim, synthetic]", "backend": "fake"}
+              "type": rc["type"], "label": "[sim, real data]" if (rc.get("world") or {}).get("config")
+              else "[sim, synthetic]", "backend": str(rc.get("backend", "fake")), "route": rc.get("route"),
+              "role": str(rc.get("role", "attack"))}
 
     # 1. regression gate
     report["regression_gate"] = [regress(e, rc, out_dir / "gate" / e["id"]) for e in entries]
@@ -240,7 +246,9 @@ def run_round(rc: dict, out_dir: Path, backend_for, phase: PhaseAllocator | None
 
 
 def _round_body(rc, out_dir, backend_for, phase, cat_dir, entries, report, cap, v_cap, write_catalog):
-    guard = SpendGuard(cap, live=False)
+    live = str(rc.get("backend", "fake")) == "live"         # owner, Nov 24: a live round needs its pre-registration
+    guard = SpendGuard(cap, live=live, route=str(rc.get("route", "direct")))
+    role = str(rc.get("role", "attack"))
     cache = None
     if (rc.get("cache") or {}).get("mode", "off") != "off":
         cache = ResponseCache(rc["cache"]["path"], rc["cache"]["mode"])
@@ -258,11 +266,13 @@ def _round_body(rc, out_dir, backend_for, phase, cat_dir, entries, report, cap, 
             t2, p2 = _whitebox_tools(snapshot)
             extra.update(t2)
             prompt = (prompt + " " + p2).strip()
-        prompt = (prompt + " " + catalog_summary(entries)).strip()
+        if role == "attack":            # an honest agent is not told about known exploits
+            prompt = (prompt + " " + catalog_summary(entries)).strip()
         be = backend_for(a, dr[a])
         dr[a]["backend"] = f"{getattr(be, 'name', type(be).__name__)}:{getattr(be, 'playbook', '')}".rstrip(":")
         loops[a] = AttackerLoop(a, be, dr[a]["provider"], dr[a]["model"], guard, cache=cache,
-                                extra_tools=extra, extra_prompt=prompt, turn_cap=int(rc.get("turn_cap", 30)))
+                                extra_tools=extra, extra_prompt=prompt, turn_cap=int(rc.get("turn_cap", 30)),
+                                role=role)
 
     # 4. twin and attack worlds
     s, cfg, h = world_inputs(rc)
@@ -278,6 +288,15 @@ def _round_body(rc, out_dir, backend_for, phase, cat_dir, entries, report, cap, 
     attack = _run(acfg, s, out_dir / "attack", loops, h, rc.get("gateway_limits"),
                   on_gateway=lambda g: holder.__setitem__("gw", g))
 
+    _write_call_logs(out_dir / "attack", loops, acfg, rc)
+    for name, w in (("twin", twin), ("attack", attack)):      # D101: each agent's status, for every roster check
+        if not w.get("error") and w.get("roster_status"):
+            (out_dir / name / "summary.json").write_text(json.dumps(
+                {"header": {"roster": w["roster"], "roster_status": w["roster_status"]}}, indent=1), encoding="utf-8")
+    report["roster_status"] = {"attack": {a: s for a, s in (attack.get("roster_status") or {}).items()
+                                          if s != "active"},
+                               "twin": {a: s for a, s in (twin.get("roster_status") or {}).items() if s != "active"}}
+
     # 5. triage, then confirm by replay
     tri = triage(attack, twin, rc["attackers"], rc.get("thresholds"))
     report["triage"] = tri
@@ -285,7 +304,8 @@ def _round_body(rc, out_dir, backend_for, phase, cat_dir, entries, report, cap, 
     report["refusal_rate_by_model"] = _refusals(loops)
     report["channel"] = _channel_use(rc, loops, attack)
     report["spend"] = {"cap_usd_round": cap, "spent_usd": round(guard.spent_usd, 6), "cap_hit": guard.cap_hit,
-                       "unpriced": "fake backend models are priced from the D94 table; replays are unpriced"}
+                       "unpriced": ("live calls: the larger of table and reported cost (D112)" if live else
+                                    "fake backend models are priced from the D94 table; replays are unpriced")}
     if cache is not None:
         report["cache"] = {"mode": cache.mode, "hits": cache.hits, "misses": cache.misses,
                            "sha256": cache.file_sha256()}
@@ -314,6 +334,30 @@ def _round_body(rc, out_dir, backend_for, phase, cat_dir, entries, report, cap, 
             phase.release(rc["name"] + ":victims", report["spend"]["victims_usd"])
     (out_dir / "round_report.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
     return report
+
+
+def _write_call_logs(world_dir: Path, loops, cfg, rc) -> None:
+    """Every model call of the round's agents, next to the attack world's exchange trace (llm_calls.jsonl, the
+    chooser's shape), so bench/course_route_check.py can judge cost and leaks. Header: config, seed, commit."""
+    from bench.runinfo import git_commit
+    traces = sorted(Path(world_dir).glob("exchange_h*/trace.jsonl"))
+    if not traces or not any(lp.call_log for lp in loops.values()):
+        return
+    with open(traces[0], encoding="utf-8") as f:
+        roster = [str(a) for a in (json.loads(f.readline()).get("roster") or [])]
+    head = {"event": "header", "run_id": cfg.get("run_name"), "config": {k: str(v) for k, v in rc.items()},
+            "seed": rc.get("seed", 1), "git_commit": git_commit(),
+            "llm_strategy": {"backend": str(rc.get("backend", "fake")), "route": rc.get("route"),
+                             "chooser_by_agent": {a: ("llm" if a in loops else "code") for a in roster}}}
+    from agents.llm.respcache import redact
+    path = traces[0].parent / "llm_calls.jsonl"
+    if path.exists():                   # LLM victims (injection round) already wrote theirs: never overwrite it
+        path = traces[0].parent / "attacker_llm_calls.jsonl"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(redact(head)) + "\n")
+        for lp in loops.values():
+            for r in lp.call_log:
+                f.write(json.dumps(redact(r), default=str) + "\n")
 
 
 def _power_of(s, aid) -> float:

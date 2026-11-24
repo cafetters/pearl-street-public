@@ -1,0 +1,6 @@
+# Exploratory red-team round 1a: M0 ceiling for 2023-09-01 to 2023-09-02 -> runs/m0_sep01/.
+data_dir: ../data
+start: 2023-09-01
+end: 2023-09-02
+slice_tz: America/Chicago
+m0_dir: runs/m0_sep01

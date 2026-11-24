@@ -29,7 +29,7 @@ def roster_of(trace_path) -> list[str]:
 
 
 def triage(attack: dict, twin: dict, attackers: list[str], thresholds: dict | None = None) -> dict:
-    th = {**THRESHOLDS, **(thresholds or {})}
+    th = {k: float(v) for k, v in {**THRESHOLDS, **(thresholds or {})}.items()}     # YAML may read 1.0e9 as text
     if attack.get("error"):
         return {"candidate": True, "reasons": ["run_did_not_finish"], "liveness": False, "error": attack["error"],
                 "label": "[sim, synthetic]"}

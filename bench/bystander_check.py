@@ -76,7 +76,10 @@ def load(run_dir) -> dict:
             "short": (ev.get("net_harm") or {}).get("shortfall_usd")}
 
 
-def check(atk_dir, twin_dir, further_below_tol: str = "section8", basis: str = "summary_cents") -> dict:
+def check(atk_dir, twin_dir, further_below_tol: str = "section8", basis: str = "summary_cents",
+          treated=None) -> dict:
+    """treated (single-LLM-agent runs, owner Nov 24): the agents whose behaviour differs from the twin, in place of
+    attackers, for a run that has none; None (the default, pinned path) keeps the attack-cell rules unchanged."""
     if further_below_tol not in FURTHER_BELOW_TOLS:
         raise ValueError(f"further_below_tol must be one of {FURTHER_BELOW_TOLS}, not {further_below_tol!r}")
     if basis not in BASES:
@@ -98,8 +101,13 @@ def check(atk_dir, twin_dir, further_below_tol: str = "section8", basis: str = "
                 missing = sorted(set(r["roster"]) - set(r[what]))
                 if missing:
                     bad.append(f"{name}: roster agents missing from {what}: {missing[:10]}")
-    if not a["attackers"]:
+    if treated is None and not a["attackers"]:
         bad.append("attack header has no attackers")
+    if treated is not None:
+        if a["attackers"]:
+            bad.append("a treated-agent check is for a run without attackers")
+        if not treated or set(treated) - set(a["roster"]):
+            bad.append(f"treated agents not on the roster: {sorted(set(treated or []) - set(a['roster']))}")
     if w["attackers"]:
         bad.append("twin header has attackers")
     if a["roster"] != w["roster"]:
@@ -128,7 +136,8 @@ def check(atk_dir, twin_dir, further_below_tol: str = "section8", basis: str = "
     else:
         g, ha, hw = 0.0, a["harm"], w["harm"]
         alone_of = {x: a["value"][x] + a["harm"][x] for x in a["harm"]}
-    honest = [x for x in a["roster"] if x not in a["attackers"]]
+    treat = list(treated) if treated is not None else a["attackers"]
+    honest = [x for x in a["roster"] if x not in treat]
     newly = {x: {"attack_harm_usd": ha[x], "twin_harm_usd": hw[x]} for x in honest
              if ha[x] > g and hw[x] <= g}
     further = {}
@@ -145,6 +154,7 @@ def check(atk_dir, twin_dir, further_below_tol: str = "section8", basis: str = "
     losses = {x: a["value"][x] - w["value"][x] for x in honest if a["value"][x] < w["value"][x]}
     return {"attack_dir": a["dir"], "twin_dir": w["dir"], "commit": a["header"].get("git_commit"),
             "attackers": a["attackers"], "honest_agents": len(honest),
+            **({"treated": treat} if treated is not None else {}),
             **({"excluded_agents": a["excluded"]} if a["excluded"] else {}),      # D101: checked and reported
             "further_below_tol": further_below_tol, "basis": basis, "guard_usd": g if basis == "unrounded" else 0.0,
             "verdict": "PASS" if not newly and not judged else "FAIL",
@@ -154,7 +164,7 @@ def check(atk_dir, twin_dir, further_below_tol: str = "section8", basis: str = "
             "zero_tolerance": {"further_below_count": len(further),
                                "further_below_usd": sum(f["further_usd"] for f in further.values()),
                                "verdict": "PASS" if not newly and not further else "FAIL"},
-            "attackers_below_acting_alone": {x: ha[x] for x in a["attackers"] if ha[x] > g},
+            "attackers_below_acting_alone": {x: ha[x] for x in treat if ha[x] > g},
             "honest_below_acting_alone_in_twin": len(already),
             "of_which_better_in_attack": len(better),
             "reported_not_judged": {"twin_relative_loss": {"agents": len(losses),

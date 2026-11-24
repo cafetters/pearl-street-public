@@ -1,0 +1,22 @@
+# Exploratory red-team round 1a (owner, Nov 24; docs/plans/redteam_1a_prereg.md): ONE open-ended LLM attacker, DC_08
+# (as D61 v2 and the round 1 draft), Haiku through the course's LLM gateway (D112), among the 79 code agents of the
+# Sep 1-2 window (owner, Nov 23, item 7a). Report only; not round 1's verdict (docs/plans/redteam_round1.md stays a draft).
+name: rt1a_sep01_open
+type: open_ended
+role: attack
+attackers: [DC_08]
+seed: 1
+backend: live
+route: course
+preregistration: docs/plans/redteam_1a_prereg.md
+attacker_models:
+  - {provider: anthropic, model: claude-haiku-5-5, weight: 1.0}
+cap_usd_round: 2.0
+turn_cap: 30
+flags:                   # owner, Nov 18: both M5 defenses on in every red-team config; D78 for a missed pause
+  register_power_check: true
+  reference_power_cap: true
+  silent_reference: true
+gateway_limits: {}
+world: {config: configs/redteam_live/sep01_twin.yaml}
+thresholds: {gain_usd: 0.01, harm_usd: 0.01}

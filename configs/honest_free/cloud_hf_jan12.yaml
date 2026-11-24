@@ -1,0 +1,20 @@
+# Launcher config for the free-hand honest agent round (python -m bench.cloud_queue ... --llm --module redteam.launch).
+# data_dir, start, end, slice_tz and m0_dir are for the launcher's checks; llm_route and llm_cap_usd_run tell the
+# launcher this run calls the course's LLM gateway (D112) and reserve its cap against the phase cap (D94).
+run_name: hf_jan12
+data_dir: ../data
+start: 2023-01-12
+end: 2023-01-13
+slice_tz: America/Chicago
+m0_dir: runs/m0_jan12
+compare_to: none
+seed: 1
+llm_route: course
+llm_cap_usd_run: 2.0
+phase:
+  name: hf_jan12
+  cap_usd_phase: 2.0
+  catalog_dir: configs/honest_free/empty_catalog
+  write_catalog: false
+  rounds:
+    - configs/honest_free/hf_jan12_round.yaml

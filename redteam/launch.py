@@ -32,9 +32,29 @@ def load(p) -> dict:
     return yaml.safe_load(Path(p).read_text(encoding="utf-8"))
 
 
+def _tracked(rel: str) -> bool:
+    """True if the file is tracked at HEAD (committed), not merely present."""
+    import subprocess
+    r = subprocess.run(["git", "-C", str(REPO), "ls-files", "--error-unmatch", "--", rel], capture_output=True)
+    if r.returncode != 0:
+        return False
+    d = subprocess.run(["git", "-C", str(REPO), "diff", "--quiet", "HEAD", "--", rel], capture_output=True)
+    return d.returncode == 0          # and unchanged since the commit
+
+
 def backend_factory(rc: dict):
-    if str(rc.get("backend", "fake")) != "fake":
-        raise ValueError("only the fake backend runs here (no provider calls without a pre-registration, D61/D96)")
+    be = str(rc.get("backend", "fake"))
+    if be == "live":        # owner, Nov 24: a live round names its committed pre-registration and the course route
+        pre = rc.get("preregistration")
+        if not pre or not (REPO / str(pre)).is_file() or not _tracked(str(pre)):
+            raise ValueError("a live round needs `preregistration:` naming a committed document (D61/D96)")
+        if str(rc.get("route", "direct")) != "course":
+            raise ValueError("a live round runs on the course route (D112): set route: course")
+        from agents.llm.chooser import make_backend
+        backend = make_backend("live", "course")          # one gateway client; config resolved now (fails closed)
+        return lambda agent_id, draw: backend
+    if be != "fake":
+        raise ValueError("only the fake backend or a pre-registered live round runs here (D61/D96)")
     pb = rc.get("fake_playbooks") or {}
 
     def make(agent_id, draw):
@@ -48,9 +68,11 @@ def run_phase(phase_cfg: dict, out: Path, root: Path = REPO) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     phase = PhaseAllocator(float(phase_cfg["cap_usd_phase"]))
     cat = root / phase_cfg.get("catalog_dir", "attacks/catalog")
-    rows = []
+    rows, labels = [], set()
     for rpath in phase_cfg["rounds"]:
         rc = load(root / rpath)
+        labels.add(("[sim, real data]" if (rc.get("world") or {}).get("config") else "[sim, synthetic]")
+                   + f" {rc.get('backend', 'fake')} backend")
         try:
             rep = run_round(rc, out / rc["name"], backend_factory(rc), phase=phase, catalog_dir=cat,
                             write_catalog=bool(phase_cfg.get("write_catalog", False)))
@@ -64,7 +86,7 @@ def run_phase(phase_cfg: dict, out: Path, root: Path = REPO) -> dict:
                      "refusal_rate_by_model": rep["refusal_rate_by_model"], "spent_usd": rep["spend"]["spent_usd"],
                      "channel": rep.get("channel"), "injection_pass": (rep.get("injection") or {}).get("pass")})
     res = {"phase": phase_cfg.get("name"), "cap_usd_phase": phase.cap, "spent_usd": phase.spent, "rounds": rows,
-           "label": "[sim, synthetic] fake backend"}
+           "label": "; ".join(sorted(labels)) or "[sim, synthetic] fake backend"}
     (out / "phase_report.json").write_text(json.dumps(res, indent=1, default=str), encoding="utf-8")
     return res
 

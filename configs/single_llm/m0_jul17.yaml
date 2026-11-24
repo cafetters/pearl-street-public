@@ -1,0 +1,6 @@
+# Single-LLM-agent runs: M0 ceiling for 2023-07-17 to 2023-07-26 -> runs/m0_jul17/.
+data_dir: ../data
+start: 2023-07-17
+end: 2023-07-26
+slice_tz: America/Chicago
+m0_dir: runs/m0_jul17

@@ -59,4 +59,5 @@ def run_world(cfg: dict, s, out_dir: Path, controllers: dict, headroom_mw: float
             "imbalance": {m["to"]: m["payload"]["charge_usd"] for m in r["log"] if m["msg_type"] == "imbalance"},
             "rejects": {a: sum(1 for m in r["log"] if m["msg_type"] == "reject" and m["to"] == a) for a in ids},
             "gateway_log": list(gw.log), "events": events, "trace": str(trace), "refused": r["refused"],
+            "roster": ids, "roster_status": dict(r.get("roster_status") or {}),            # D101
             "bus_refusals": len(r.get("refused") or []) if isinstance(r.get("refused"), list) else r.get("refused")}
