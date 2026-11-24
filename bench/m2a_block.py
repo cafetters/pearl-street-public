@@ -27,6 +27,7 @@ from pathlib import Path
 from bench import d56_resettle as D
 from bench import nov01 as N
 from bench import d58_horizon as H
+from bench import roster_cover as RC
 
 MARGINS = (0.0, 5.0, 10.0)
 
@@ -36,6 +37,7 @@ def cell_block(w: str, m: float) -> dict:
     if cell is None:
         return {"window": w, "margin": m, "run": run, "missing": True}
     s = N.summary(run)
+    RC.guard(s.get("header"), "bench.m2a_block")     # D101: not built for exclusions
     (hk, ev), = s["exchange_by_headroom_mw"].items()
     met = D.cell_metrics(cell, H.RULE)
     tc = ev.get("target_check_metered") or {}

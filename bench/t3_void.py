@@ -42,6 +42,7 @@ from zoneinfo import ZoneInfo
 
 from exchange.core import ENERGY_TOL_KWH
 from exchange.records import ACTIVITY_TOL_KW
+from bench import roster_cover as RC
 
 REPRO_TOL_USD = 1e-3        # fail closed: the d81 rebuild vs the run's own peak_settle, per agent
 PRICED = 1e-9               # exchange/core.py: a settled price above this is priced
@@ -96,6 +97,7 @@ def load(run_dir) -> dict:
     st["dropped"] = dropped
     with open(trace_path(run_dir), encoding="utf-8") as f:
         header = json.loads(next(f))
+        RC.guard(header, "bench.t3_void", run_dir)     # D101: not built for exclusions
         ex = header.get("exchange") or {}
         st["header"] = header
         st["tz"] = ZoneInfo(header["config"].get("slice_tz") or "America/Chicago")   # sim.run_m1.TZ when unset

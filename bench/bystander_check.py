@@ -34,6 +34,8 @@ import json
 import sys
 from pathlib import Path
 
+from bench import roster_cover as RC
+
 NET_HARM_REL, NET_HARM_ABS = 0.01, 10.0       # section 8: max(1% of |acting alone|, $10), as sim/run_m1.py
 # Staged D98 (owner, Nov 11): "unrounded" judges on the summary's signed, unrounded net_harm.shortfall_usd (written
 # by sim/run_m1.py under harm_unrounded: true) with a $1e-6 float guard; "summary_cents" (default) is the pinned D88/D91
@@ -63,7 +65,12 @@ def load(run_dir) -> dict:
         raise CheckFailed(f"{run_dir}: expected one headroom, got {list(evs)}")
     ev = next(iter(evs.values()))
     header = _trace_header(run_dir)
-    return {"dir": str(run_dir), "header": header, "roster": list(header.get("roster") or []),
+    sh = summ.get("header") or {}
+    try:            # D101: agents out of the market are still checked here (acting alone) and reported as excluded
+        excluded = RC.excluded(sh) if "roster_status" in sh else {}      # a summary before D101: all active
+    except RC.RosterError as e:
+        raise CheckFailed(f"{run_dir}: {e}") from None
+    return {"dir": str(run_dir), "header": header, "roster": list(header.get("roster") or []), "excluded": excluded,
             "attackers": [a["agent"] for a in header.get("attackers") or []],
             "harm": (ev.get("net_harm") or {}).get("by_agent_usd"), "value": ev.get("agent_value_usd"),
             "short": (ev.get("net_harm") or {}).get("shortfall_usd")}
@@ -97,6 +104,8 @@ def check(atk_dir, twin_dir, further_below_tol: str = "section8", basis: str = "
         bad.append("twin header has attackers")
     if a["roster"] != w["roster"]:
         bad.append("rosters differ")
+    if a["excluded"] != w["excluded"]:
+        bad.append(f"agents out of the market differ (D101): attack {a['excluded']}, twin {w['excluded']}")
     if basis == "unrounded":
         for name, r in (("attack", a), ("twin", w)):
             if r["short"] is None:
@@ -136,6 +145,7 @@ def check(atk_dir, twin_dir, further_below_tol: str = "section8", basis: str = "
     losses = {x: a["value"][x] - w["value"][x] for x in honest if a["value"][x] < w["value"][x]}
     return {"attack_dir": a["dir"], "twin_dir": w["dir"], "commit": a["header"].get("git_commit"),
             "attackers": a["attackers"], "honest_agents": len(honest),
+            **({"excluded_agents": a["excluded"]} if a["excluded"] else {}),      # D101: checked and reported
             "further_below_tol": further_below_tol, "basis": basis, "guard_usd": g if basis == "unrounded" else 0.0,
             "verdict": "PASS" if not newly and not judged else "FAIL",
             "newly_below_acting_alone": newly,

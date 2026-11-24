@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 from bench.run_diff import SUMMARY_SKIP, _drop, diff_runs, first_diff
+from bench import roster_cover as RC
 
 OWNER_ID = re.compile(r"metering:owner[0-9]+")
 NOTICE_ID = re.compile(r"ex:refusal[0-9]+")
@@ -56,7 +57,9 @@ def honest(base: Path, new: Path, commit: str | None, header_skip_extra=(), adju
     (bench/d69_regress.py); the defaults change nothing."""
     trace = next(new.glob("exchange_*/trace.jsonl"))
     att, before = attestations(trace)
-    roster = json.loads(trace.open(encoding="utf-8").readline())["roster"]
+    header = json.loads(trace.open(encoding="utf-8").readline())
+    RC.guard(header, "bench.d69_check", trace)     # D101: not built for exclusions
+    roster = header["roster"]
     n = len(att)
     problems = []
     lines = [json.loads(s) for s in trace.read_text(encoding="utf-8").splitlines()[1:]]

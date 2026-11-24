@@ -49,10 +49,9 @@ def test_each_defense_layer_alone_blocks_it(tmp_path, entry, defense):
     w = replay_world(rc, entry["actions"], tmp_path, flags=defense["flags"], limits=defense["gateway_limits"],
                      name="exploit")
     if defense["name"] == "register_power_check":
-        # owner item 2: gateway grant off, exchange flag on: blocked at registration. Today that stops the run
-        # (the roster rule, rt-0001's class), so "blocked" here is the reject, recorded honestly as a run stop
-        assert w.get("error") and "roster agents not registered" in w["error"]
-        return
+        # owner item 2: gateway grant off, exchange flag on: blocked at registration. Since D101 (Nov 23) the
+        # rejected agent is left out of the market and the run goes on (it used to stop), so the usual check applies
+        assert not w.get("error"), w.get("error")
     c = replay_world(rc, entry["control"]["actions"], tmp_path, flags=defense["flags"],
                      limits=defense["gateway_limits"], name="control")
     a = attributable(w, c, entry["attackers"])
@@ -84,10 +83,9 @@ def test_rt0001_harness_keeps_the_run_alive_by_default_enrollment(tmp_path):
     assert [x["agent_id"] for x in w["events"] if x["event"] == "auto_registered"] == ["A"]
 
 
-def test_rt0001_is_still_open_in_the_simulator(tmp_path):
-    """Documents the open issue (fix proposal staged; sim/run_m1.py not edited tonight): without the harness's default
-    enrollment, an agent that sends no register stops the run. When this test fails, the fix has landed: update the
-    entry's status."""
+def test_rt0001_is_fixed_in_the_simulator(tmp_path):
+    """D101 (built Nov 23): without the harness's default enrollment, an agent that sends no register is left out of
+    the market with status "excluded: never registered", and the run goes on (it used to stop it)."""
     from redteam.synth import BASE_CFG, HEADROOM_MW, synthetic_slice
     from sim.run_m1 import run_variant
 
@@ -110,8 +108,9 @@ def test_rt0001_is_still_open_in_the_simulator(tmp_path):
     R.wrap_attacker = wrap
     try:
         cfg = {**BASE_CFG, "run_name": "rt1_open", "attackers": [{"agent": "A", "type": "test_no_register"}]}
-        with pytest.raises((RuntimeError, KeyError)):
-            run_variant(cfg, synthetic_slice(), np.arange(3), tmp_path, headroom_mw=HEADROOM_MW)
+        r = run_variant(cfg, synthetic_slice(), np.arange(3), tmp_path, headroom_mw=HEADROOM_MW)
+        assert r["roster_status"]["A"] == "excluded: never registered"
+        assert {r["roster_status"]["B"], r["roster_status"]["C"]} == {"active"}
     finally:
         R.wrap_attacker = orig
 

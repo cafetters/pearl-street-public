@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from bench import roster_cover as RC
 from sim.reference import ETA_REF, SD_REF, selfish_site_net    # rule 1p, shared with the run (sim/run_m1.py)
 
 REPO = Path(__file__).resolve().parents[1]
@@ -366,6 +367,7 @@ def load_cell(run: str, cfg_path: Path | None = None, max_rule: bool = False) ->
     h = hs[0]
     ev = summ["exchange_by_headroom_mw"][h]
     roster = list(summ["header"]["roster"])
+    RC.require_all_active(summ["header"], "bench.d56_resettle")     # D101: not built for exclusions
     cfg_path = cfg_path or REPO / "configs" / "h2h" / f"{run}.yaml"
     cfg = load_config(cfg_path)
     raw = yaml.safe_load(cfg_path.read_text())

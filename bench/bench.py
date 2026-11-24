@@ -34,7 +34,8 @@ NETWORK_SLACK_PEAK = 1e4        # M2c: per MW-step of network slack in peak mode
 NETWORK_SLACK_USD = 1000.0      # M2c: $ per MW-step of network slack in cap (value) mode
 
 
-def build(agents, t0, t1, s_init, s_term, cap_kw=None, peak=False, peak_from=0, pre_cap_kw=None, network=None):
+def build(agents, t0, t1, s_init, s_term, cap_kw=None, peak=False, peak_from=0, pre_cap_kw=None, network=None,
+          dc=None):
     """LP over agents x [t0,t1). Vars per agent: c,d,s,u (each L). Extra: Z (peak) or slack[L - peak_from] (cap).
     peak_from (D57, default 0 = the LP as before): the peak row (peak mode) or the cap rows and their slack (cap mode)
     exist only for steps peak_from..L-1 of the window; earlier steps keep every physical constraint.
@@ -45,7 +46,12 @@ def build(agents, t0, t1, s_init, s_term, cap_kw=None, peak=False, peak_from=0, 
         sign_kt x sum_a g_ka x (d - c - u)_a,t / 1000 - slack_kt <= rhs_kt,
     with a nonnegative slack per row at NETWORK_SLACK_PEAK (peak mode) or NETWORK_SLACK_USD (cap mode) per MW-step.
     The rows sit before the coupling rows; their slacks are the last variables. The second return value then holds
-    the usual extras followed by the K x L network slacks."""
+    the usual extras followed by the K x L network slacks.
+    dc (M2b, default None = no deferral): {"agents": positions in `agents`, "generated": [(L,) kW], "sessions":
+    [[sim.dc_defer.Session]]}: each listed agent's load becomes LOAD - generated + served, with served (L,) a variable
+    under sim/dc_defer.py's rules (lp_rows). Served columns are the last variables (after the extras); the coupling
+    and D57 pre-cap rows include them. Not combinable with network (refused). The export (POI) row ignores the
+    deferral (a data center's export never nears its POI limit), disclosed."""
     L = t1 - t0; na = len(agents); nv = 4 * L
     pf = int(peak_from)
     if not 0 <= pf < L:
@@ -84,18 +90,31 @@ def build(agents, t0, t1, s_init, s_term, cap_kw=None, peak=False, peak_from=0, 
     elif cap_kw is not None: extra = nc
     nk = 0 if network is None else int(np.asarray(network["g"]).shape[0])
     nns = nk * L                                                               # M2c network slack columns
+    if dc is not None and network is not None:
+        raise ValueError("dc deferral and network rows together are not built (M2b): pass one or the other")
+    from sim import dc_defer as DCD
+    dca = [] if dc is None else list(dc["agents"])
+    nds = len(dca) * L                                                         # M2b served-workload columns
+    dc_rows = ([DCD.lp_rows(np.asarray(g_, float), ss_, DT, (dc.get("room") or [None] * len(dc["generated"]))[m])
+                for m, (g_, ss_) in enumerate(zip(dc["generated"], dc["sessions"]))] if dc else [])
+    def dc_cols(rows_n, pick):
+        """rows_n x nds block: `pick(m)` (rows_n x L) in dc agent m's columns."""
+        return sp.hstack([pick(m) for m in range(len(dca))], format='csr') if dca else sp.csr_matrix((rows_n, 0))
     def stack(rows, nrows_list):
         mats = []
         for j, M in rows:
-            left = sp.csr_matrix((M.shape[0], 4 * L * j)); right = sp.csr_matrix((M.shape[0], nx - 4 * L * (j + 1) + extra + nns))
+            left = sp.csr_matrix((M.shape[0], 4 * L * j)); right = sp.csr_matrix((M.shape[0], nx - 4 * L * (j + 1) + extra + nns + nds))
             mats.append(sp.hstack([left, M, right]))
         return sp.vstack(mats, format='csr')
     Aeq = stack(rows_eq, None); Aub = stack(rows_ub, None)
     beq = np.concatenate(beq); bub = np.concatenate(bub)
     if pre_cap_kw is not None:
         # D57: sum_i (c - d + u) <= sum_i pv - SL + pre_cap on steps before peak_from (net load <= pre_cap)
-        pre = sp.hstack([sp.hstack([I[:pf], -I[:pf], Z[:pf], I[:pf]])] * na + [sp.csr_matrix((pf, extra + nns))])
+        pre = sp.hstack([sp.hstack([I[:pf], -I[:pf], Z[:pf], I[:pf]])] * na + [sp.csr_matrix((pf, extra + nns)),
+                                                                                  dc_cols(pf, lambda m: I[:pf])])
         rhs_pre = (PV[agents, t0:t1].sum(0) - SL[t0:t1] + pre_cap_kw)[:pf]
+        if dca:
+            rhs_pre = rhs_pre + sum(np.asarray(g_, float) for g_ in dc["generated"])[:pf]
         Aub = sp.vstack([Aub, pre], format='csr'); bub = np.concatenate([bub, rhs_pre])
     if network is not None:
         # M2c: element rows, before the coupling rows (which stay last for m0.solve's dual)
@@ -112,6 +131,13 @@ def build(agents, t0, t1, s_init, s_term, cap_kw=None, peak=False, peak_from=0, 
             slack = sp.hstack([sp.csr_matrix((L, k * L)), -I, sp.csr_matrix((L, (nk - k - 1) * L))])
             blocks.append(sp.hstack(per_agent + [sp.csr_matrix((L, extra)), slack]))
         Aub = sp.vstack([Aub] + blocks, format='csr'); bub = np.concatenate([bub, rh.reshape(-1)])
+    if dca:
+        # M2b: each data center's deferral rules on its served columns, before the coupling rows (still last)
+        for m, (A_, b_, lo_, hi_) in enumerate(dc_rows):
+            n_ = A_.shape[0]
+            blk = dc_cols(n_, lambda q: sp.csr_matrix(A_) if q == m else sp.csr_matrix((n_, L)))
+            Aub = sp.vstack([Aub, sp.hstack([sp.csr_matrix((n_, nx + extra + nns)), blk])], format='csr')
+            bub = np.concatenate([bub, b_])
     if peak or cap_kw is not None:
         # sum_i (c - d + u) - Z/slack <= sum_i pv - SL (+cap), on steps peak_from.. only
         Ic, Zc = (I, Z) if pf == 0 else (I[pf:], Z[pf:])
@@ -126,6 +152,10 @@ def build(agents, t0, t1, s_init, s_term, cap_kw=None, peak=False, peak_from=0, 
             rhs = rhs[pf:]
         if nns:
             cpl = sp.hstack([cpl, sp.csr_matrix((nc, nns))])
+        if dca:      # M2b: net load includes served workload; the recorded generated workload moves to the rhs
+            cpl = sp.hstack([cpl, dc_cols(nc, lambda m: Ic)])
+            gsum = sum(np.asarray(g_, float) for g_ in dc["generated"])
+            rhs = rhs + (gsum[pf:] if pf else gsum)
         Aub = sp.vstack([Aub, cpl], format='csr'); bub = np.concatenate([bub, rhs])
     lb = np.concatenate(lb); ub = np.concatenate(ub); cost = np.concatenate(cost)
     if peak:
@@ -135,6 +165,9 @@ def build(agents, t0, t1, s_init, s_term, cap_kw=None, peak=False, peak_from=0, 
     if nns:
         pen = NETWORK_SLACK_PEAK if peak else NETWORK_SLACK_USD
         cost = np.concatenate([cost, np.full(nns, pen)]); lb = np.concatenate([lb, np.zeros(nns)]); ub = np.concatenate([ub, np.full(nns, np.inf)])
+    if dca:          # served workload pays the RT price as load (scaled like the battery terms in peak mode)
+        cost = np.concatenate([cost] + [pr * K * (1e-6 if peak else 1.0)] * len(dca))
+        lb = np.concatenate([lb] + [r_[2] for r_ in dc_rows]); ub = np.concatenate([ub] + [r_[3] for r_ in dc_rows])
     r = linprog(cost, A_ub=Aub, b_ub=bub, A_eq=Aeq, b_eq=beq, bounds=np.c_[lb, ub], method='highs')
     if r.status != 0: raise RuntimeError(r.message)
     x = r.x[:nx].reshape(na, 4, L)

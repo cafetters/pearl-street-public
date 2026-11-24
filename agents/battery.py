@@ -61,10 +61,23 @@ class BatteryAgent:
                  independent_offers: bool = False, release_superseded_lock: bool = False,
                  cap_rebase: bool = False, plan_to_nomination: bool = False, use_room: bool = False,
                  price_mode: bool = False, prox_eps_usd_mwh: float = 0.05,
-                 peak_response_margin_usd_mwh: float = 0.0):
+                 peak_response_margin_usd_mwh: float = 0.0, dc: dict | None = None):
         self.id, self.b = agent_id, battery
         self.avail = np.maximum(np.nan_to_num(pv) - curt, 0.0)
         self.base_export = np.nan_to_num(pv) - curt - load
+        # M2b: a data center's deferrable workload, {"generated": (T,) kW, "sessions": [sim.dc_defer.Session]}; it
+        # reschedules it each plan (dc_defer.schedule), so its load forecast is load - generated + served
+        self.dc = dc
+        if dc is not None:
+            self._base_export_rec = self.base_export.copy()
+            self.dc_served = np.asarray(dc["generated"], float).copy()
+            self.dc_hold = np.full(len(self.dc_served), np.nan)   # workload kept on bound steps (NaN = free)
+        # M2b item 4 (dc_joint, owner Nov 19): in the exchange (price mode), served workload is planned in the battery's
+        # own LP, against the peak price and inside its site net (lock, imbalance, POI, prox, margin). Acting alone
+        # keeps dc_defer.schedule.
+        self.dc_joint = bool(dc is not None and dc.get("joint") and participate and price_mode)
+        if dc is not None and dc.get("joint") and participate and not price_mode:
+            raise ValueError("dc_joint needs price_mode")
         self.iso, self.end_iso, self.dt_h = clock_iso, end_iso, dt_h
         self.idx = {t: i for i, t in enumerate(clock_iso)}
         self.T = len(clock_iso)
@@ -314,7 +327,7 @@ class BatteryAgent:
         s_next = self.plan_s0 if self.plan.k0 == k + 1 else float(self.plan.s[k - self.plan.k0])
         zshift = self.zone_shift if self.zone_rows else 0.0          # M2c: the zones' ADMM centre shift
         centre = np.where(c["mask"] & ~np.isnan(rnd["shift"]) & ~np.isnan(self.latest_sent),
-                          self.base_export - self.latest_sent - rnd["shift"] - zshift, np.nan)
+                          self._lp_base_export() - self.latest_sent - rnd["shift"] - zshift, np.nan)
         self._final_round = bool(rnd.get("final"))       # D58 log: the final round's plan is the one nominated
         self.plan = self._solve(k + 1, s_next, price, self.commit, prox=(rnd["rho"], centre[k + 1:], self.prox_eps))
         self._final_round = False
@@ -356,6 +369,8 @@ class BatteryAgent:
 
     def _solve(self, k, soc, price, commit, q_mask=None, ref_net=None, use_cap=True, extra_cap=None, prox=None):
         self.n_solves += 1
+        if self.dc is not None and not self.dc_joint:
+            self._reschedule_dc(k, price)
         free = self._superseded()
         nom_all = self.nom
         if free.any():
@@ -373,16 +388,66 @@ class BatteryAgent:
         if extra_cap is not None and not np.isnan(extra_cap[k:]).all():      # min of both caps (NaN = none)
             cap = extra_cap[k:] if cap is None else np.fmin(cap, extra_cap[k:])
         band = 0.0 if self.plan_to_nomination else self.band
-        args = (self.b, k, soc, price[k:], self.avail[k:], self.base_export[k:], commit[k:], self.dt_h, self.wear,
-                None if q_mask is None else q_mask[k:], nom, band, self.imb_price,
+        args = (self.b, k, soc, price[k:], self.avail[k:], self._lp_base_export()[k:], commit[k:], self.dt_h,
+                self.wear, None if q_mask is None else q_mask[k:], nom, band, self.imb_price,
                 None if ref_net is None else ref_net[k:], cap, band, self.cap_price)
+        dc = self._dc_rows(k) if self.dc_joint else None
+        kw = {"dc": dc} if dc is not None else {}
         peak = self.effective_peak()[k:] if self.price_mode else None
         if not (self.margin > 0 and self.participate and q_mask is None and peak is not None and peak.any()):
-            return solve(*args, peak=peak, prox=prox)
-        anchor = self._anchor(args)
-        plan = solve(*args, peak=peak, prox=prox, anchor=(anchor, self.margin))
-        self._log_margin(k, args, peak, prox, anchor, plan)
+            return self._adopt(solve(*args, peak=peak, prox=prox, **kw))
+        anchor = self._anchor(args, kw)
+        plan = solve(*args, peak=peak, prox=prox, anchor=(anchor, self.margin), **kw)
+        self._log_margin(k, args, peak, prox, anchor, plan, kw)
+        return self._adopt(plan)
+
+    def _lp_base_export(self) -> np.ndarray:
+        """The base export the LP plans on: with the joint planner, the recorded export plus all generated workload
+        (served work is the LP's u); otherwise base_export."""
+        if self.dc_joint:
+            return self._base_export_rec + np.asarray(self.dc["generated"], float)
+        return self.base_export
+
+    def _dc_rows(self, k):
+        """M2b joint planner: the deferral rules over steps k..end (executed steps fixed), with bound steps held at
+        the workload their nomination was built on (the Nov 19 hold, as in _reschedule_dc)."""
+        from sim import dc_defer as DCD
+        bound = ~np.isnan(self.nom) & ~self._superseded()
+        self.dc_hold[~bound] = np.nan
+        new = bound & np.isnan(self.dc_hold)
+        self.dc_hold[new] = self.dc_served[new]
+        return DCD.rows_from(self.dc["generated"], self.dc["sessions"], self.dt_h, k, self.dc_served[:k],
+                             hold=self.dc_hold, room=self.dc.get("room"))
+
+    def _adopt(self, plan):
+        """With the joint planner, the plan's served workload becomes the schedule, and base_export follows, so every
+        site net read as base_export + d - c - x includes it."""
+        if self.dc_joint and plan is not None and plan.u is not None:
+            self.dc_served[plan.k0:] = plan.u
+            self.base_export = self._base_export_rec + np.asarray(self.dc["generated"], float) - self.dc_served
         return plan
+
+    @staticmethod
+    def _site_net(args, p) -> np.ndarray:
+        """Site net of plan p on the LP's base export (args[5]), served workload included when planned jointly."""
+        net = args[5] + p.d - p.c - p.x
+        return net - p.u if p.u is not None else net
+
+    def _reschedule_dc(self, k, price):
+        """M2b: serve the deferrable workload at the cheapest allowed steps for the price it plans on (plus its peak
+        price in arm C), steps before k fixed as executed; the load forecast follows."""
+        from sim import dc_defer as DCD
+        p = np.asarray(price, float) + (self.effective_peak() if self.price_mode else 0.0)
+        g = np.asarray(self.dc["generated"], float)
+        # Nov 19: steps a binding nomination locked keep the workload that nomination was built on (the schedule in
+        # force when they were first seen bound); a released (superseded) step is free again
+        bound = ~np.isnan(self.nom) & ~self._superseded()
+        self.dc_hold[~bound] = np.nan
+        new = bound & np.isnan(self.dc_hold)
+        self.dc_hold[new] = self.dc_served[new]
+        self.dc_served = DCD.schedule(p, g, self.dc["sessions"], self.dt_h, fixed=self.dc_served[:k], hold=self.dc_hold,
+                                      room=self.dc.get("room"))
+        self.base_export = self._base_export_rec + g - self.dc_served
 
     def effective_peak(self) -> np.ndarray:
         """The peak price plus this asset's zone component (M2c), $/MWh per step. Without zone rows it is the peak
@@ -391,7 +456,7 @@ class BatteryAgent:
             return self.peak
         return self.peak + self.zone_add
 
-    def _anchor(self, args) -> np.ndarray:
+    def _anchor(self, args, kw=None) -> np.ndarray:
         """D58: site net of the agent's own selfish plan for these inputs (no peak price, no prox), cached on them."""
         h = hashlib.sha1(repr((args[1], args[2], args[11], args[12])).encode())
         for a in (args[3], args[6], args[9], args[10], args[13], args[14]):
@@ -400,21 +465,20 @@ class BatteryAgent:
         if key not in self._anchors:
             if len(self._anchors) > 64:
                 self._anchors.clear()
-            p = solve(*args)
-            self._anchors[key] = self.base_export[p.k0:] + p.d - p.c - p.x
+            p = solve(*args, **(kw or {}))
+            self._anchors[key] = self._site_net(args, p)
         return self._anchors[key]
 
-    def _log_margin(self, k, args, peak, prox, anchor, plan):
+    def _log_margin(self, k, args, peak, prox, anchor, plan, kw=None):
         """Log when the margin binds: the plan sits off its selfish anchor (the margin term costs something), or the
         margin held back a shift the m = 0 plan at the same step would make. Declined MWh is against that m = 0 plan;
         shifted MWh = sum |site net - anchor| x dt (both legs, as bench/d58_sites.py counts it)."""
         kmwh = self.dt_h / 1000.0
-        dev = np.abs(self.base_export[plan.k0:] + plan.d - plan.c - plan.x - anchor)
+        dev = np.abs(self._site_net(args, plan) - anchor)
         t0 = time.perf_counter()
-        p0 = solve(*args, peak=peak, prox=prox)
+        p0 = solve(*args, peak=peak, prox=prox, **(kw or {}))
         self.margin_compare_secs += time.perf_counter() - t0
-        shifted, shifted0 = float(dev.sum() * kmwh), float(np.abs(
-            self.base_export[p0.k0:] + p0.d - p0.c - p0.x - anchor).sum() * kmwh)
+        shifted, shifted0 = float(dev.sum() * kmwh), float(np.abs(self._site_net(args, p0) - anchor).sum() * kmwh)
         if dev.max(initial=0.0) <= MARGIN_BIND_KW and shifted0 - shifted <= MARGIN_BIND_KW * kmwh:
             return
         self.margin_log.append({

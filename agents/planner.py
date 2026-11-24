@@ -67,12 +67,13 @@ class Plan:
     sh: np.ndarray
     cost: float             # objective without penalties: -(forecast revenue from the battery) + wear
     q: float = 0.0
+    u: np.ndarray | None = None     # M2b joint planner: the data center's served workload, kW per step (None without dc)
 
 
 def solve(b: Battery, k0: int, s_now: float, price, avail, base_export, commit, dt_h: float, wear: float,
           q_mask=None, nom=None, band: float = 0.0, imb_price: float = 0.0, ref_net=None, load_cap=None,
           cap_band: float = 0.0, cap_price: float = CAP_USD_MWH, peak=None, prox=None, anchor=None,
-          p_max=None, s_floor=None) -> Plan | None:
+          p_max=None, s_floor=None, dc=None) -> Plan | None:
     """Plan steps k0..end. price, avail (pv - curt), base_export (pv - curt - load) and commit (awarded kW, d - c
     must reach it) are arrays over the horizon. With q_mask, also maximize a uniform extra commitment q over the
     masked steps, with no shortfall or terminal slack allowed. Returns None if that is infeasible.
@@ -85,11 +86,19 @@ def solve(b: Battery, k0: int, s_now: float, price, avail, base_export, commit, 
     centre)^2 as piecewise-linear secants (prox_breakpoints). Neither is in Plan.cost, so offer floors stay energy.
     anchor (D58 margin): (site net kW per step with NaN where none, m $/MWh): adds (m/2) |site net - anchor| per MWh,
     so a shift, which moves both legs, pays about m per MWh moved. Not in Plan.cost. None or m = 0 adds nothing.
+    dc (M2b joint planner, `dc_joint`): (A, b, lo, hi) from sim.dc_defer.rows_from over steps k0..end. Adds the data
+    center's served workload u (kW per step) as the last block; base_export must then exclude all generated workload,
+    so site net = base_export + d - c - x - u. u enters every row on site net (POI export, locked nomination, ref_net
+    and load_cap extras, prox, anchor) and costs (price + peak) x K plus dc_defer's tie-break; its energy cost is in
+    Plan.cost. Not with q_mask (offers are arm A; the joint planner is arm C only).
     Extra variables go last, so without them the LP is exactly the M1 one."""
     L = len(price)
     K = dt_h / 1000.0
     hard = q_mask is not None
+    if dc is not None and hard:
+        raise ValueError("the joint data-center planner does not size offers (q_mask)")
     nq = 1 if hard else 0
+    u_ub, u_eq = [], []           # dc: (row indices, step indices, coefficient) of u in Aub / Aeq
     n = 5 * L + 1 + nq            # blocks c, d, s, x, sh, then terminal slack z, then q
     I = sp.identity(L, format="csr")
     Z = sp.csr_matrix((L, L))
@@ -102,6 +111,7 @@ def solve(b: Battery, k0: int, s_now: float, price, avail, base_export, commit, 
 
     rows = [sp.hstack([I, I, Z, Z, Z, zc]),                       # c + d <= P
             sp.hstack([-I, I, Z, -I, Z, zc])]                     # export <= POI
+    u_ub.append((L + np.arange(L), np.arange(L), -1.0))         # export = base_export + d - c - x - u
     # D80 (declared_reference, 1p's reference only): per-step power cap (kW) and SOC floor (kWh), NaN where none
     pcap = np.full(L, b.P) if p_max is None else np.fmin(np.full(L, b.P), np.asarray(p_max, float)[:L])
     rhs = [pcap, b.POI - base_export]
@@ -127,6 +137,8 @@ def solve(b: Battery, k0: int, s_now: float, price, avail, base_export, commit, 
         net_ctrl = sp.hstack([-sel, sel, z0, -sel, z0, sp.csr_matrix((m, 1 + nq))])
         Im = sp.identity(m, format="csr")
         Zm = sp.csr_matrix((m, m))
+        n0 = Aub.shape[0]
+        u_ub += [(n0 + np.arange(m), locked, -1.0), (n0 + m + np.arange(m), locked, 1.0)]
         Aeq = sp.hstack([Aeq, sp.csr_matrix((Aeq.shape[0], 2 * m))], format="csr")
         Aub = sp.vstack([sp.hstack([Aub, sp.csr_matrix((Aub.shape[0], 2 * m))]),
                          sp.hstack([net_ctrl, -Im, Zm]), sp.hstack([-net_ctrl, Zm, -Im])], format="csr")
@@ -155,6 +167,7 @@ def solve(b: Battery, k0: int, s_now: float, price, avail, base_export, commit, 
                                sp.csr_matrix((k_, n_extra - at - k_))])
             blocks.append(sp.hstack([neg_net, slack]))
             rhs_x.append(rhs_e)
+            u_ub.append((Aub.shape[0] + at + np.arange(k_), idx, 1.0))       # -(site net) gains + u
             at += k_
         Aub = sp.vstack([Aub] + blocks, format="csr")
         bub = np.concatenate([bub] + rhs_x)
@@ -186,6 +199,8 @@ def solve(b: Battery, k0: int, s_now: float, price, avail, base_export, commit, 
         ip = np.flatnonzero(~np.isnan(centre))
         if rho > 0 and len(ip):
             hi = b.P + float(np.max(np.maximum(avail, 0.0), initial=0.0))      # c - d + x lies in [-P, P + avail]
+            if dc is not None:                                                  # ... + u, with u in [0, u_hi]
+                hi += float(np.max(dc[3], initial=0.0))
             R = max(float((hi - centre[ip]).max()), float((centre[ip] + b.P).max()), 0.0) + 1.0
             bp = prox_breakpoints(R, rho, eps)
             w, slope = np.diff(bp), rho / 2 * (bp[:-1] + bp[1:])
@@ -197,6 +212,7 @@ def solve(b: Battery, k0: int, s_now: float, price, avail, base_export, commit, 
             z0 = sp.csr_matrix((n_p, L))
             net_load = sp.hstack([sel, -sel, z0, sel, sp.csr_matrix((n_p, n_now - 4 * L))])    # c - d + x
             seg = sp.hstack([-sp.identity(n_p, format="csr")] * m_s + [sp.identity(n_p, format="csr")] * m_s)
+            u_eq.append((Aeq.shape[0] + np.arange(n_p), ip, 1.0))
             Aeq = sp.vstack([sp.hstack([Aeq, sp.csr_matrix((Aeq.shape[0], n_seg))]), sp.hstack([net_load, seg])],
                             format="csr")
             beq = np.concatenate([beq, centre[ip]])
@@ -213,11 +229,30 @@ def solve(b: Battery, k0: int, s_now: float, price, avail, base_export, commit, 
             z0 = sp.csr_matrix((n_a, L))
             net_ctrl = sp.hstack([-sel, sel, z0, -sel, sp.csr_matrix((n_a, n_now - 4 * L))])      # d - c - x
             Ia = sp.identity(n_a, format="csr")
+            u_eq.append((Aeq.shape[0] + np.arange(n_a), ia, -1.0))
             Aeq = sp.vstack([sp.hstack([Aeq, sp.csr_matrix((Aeq.shape[0], 2 * n_a))]),
                              sp.hstack([net_ctrl, -Ia, Ia])], format="csr")
             beq = np.concatenate([beq, a_net[ia] - base_export[ia]])
             cost = np.concatenate([cost, np.full(2 * n_a, anchor[1] / 2 * K)])
             lb, ub = np.concatenate([lb, np.zeros(2 * n_a)]), np.concatenate([ub, np.full(2 * n_a, np.inf)])
+    if dc is not None:            # M2b joint planner: the served block u, last
+        from sim.dc_defer import TIE_BREAK
+        A_dc, b_dc, lo_dc, hi_dc = dc
+
+        def ucols(entries, n_rows):
+            if not entries:
+                return sp.csr_matrix((n_rows, L))
+            r_ = np.concatenate([e[0] for e in entries])
+            c_ = np.concatenate([np.asarray(e[1], int) for e in entries])
+            v_ = np.concatenate([np.full(len(e[0]), e[2]) for e in entries])
+            return sp.csr_matrix((v_, (r_, c_)), shape=(n_rows, L))
+        n_cols = Aub.shape[1]
+        Aub = sp.vstack([sp.hstack([Aub, ucols(u_ub, Aub.shape[0])]),
+                         sp.hstack([sp.csr_matrix((A_dc.shape[0], n_cols)), A_dc])], format="csr")
+        bub = np.concatenate([bub, b_dc])
+        Aeq = sp.hstack([Aeq, ucols(u_eq, Aeq.shape[0])], format="csr")
+        cost = np.concatenate([cost, (pe + TIE_BREAK * np.arange(L)) * K])
+        lb, ub = np.concatenate([lb, lo_dc]), np.concatenate([ub, hi_dc])
     r = linprog(cost, A_ub=Aub, b_ub=bub, A_eq=Aeq, b_eq=beq, bounds=np.c_[lb, ub], method="highs")
     if r.status != 0:
         if hard:
@@ -228,4 +263,8 @@ def solve(b: Battery, k0: int, s_now: float, price, avail, base_export, commit, 
     base_cost = float(price @ (c - d + x) * K + wear * K * d.sum())
     if m:     # imbalance is real money, so floors include it
         base_cost += float(imb_price * K * v[5 * L + 1 + nq:5 * L + 1 + nq + 2 * m].sum())
-    return Plan(k0, c, d, s, x, sh, base_cost, float(v[5 * L + 1]) if hard else 0.0)
+    u = None
+    if dc is not None:
+        u = v[-L:].copy()
+        base_cost += float(price @ u * K)
+    return Plan(k0, c, d, s, x, sh, base_cost, float(v[5 * L + 1]) if hard else 0.0, u)

@@ -34,6 +34,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from bench import roster_cover as RC
 
 ROOT = Path(__file__).resolve().parents[1]
 ATTACK_TYPE = "infeasible_declare"
@@ -52,6 +53,7 @@ def read_run(run_dir) -> tuple[dict, list[dict]]:
         raise Refused(f"{run_dir}: expected one exchange trace, found {len(paths)}")
     lines = paths[0].read_text(encoding="utf-8").splitlines()
     header = json.loads(lines[0])
+    RC.guard(header, "bench.d90_check", paths[0])     # D101: not built for exclusions
     log = [json.loads(x) for x in lines[1:]]
     log = [{**m, "sender": m.get("sender", m.get("from"))} for m in log if "msg_type" in m]      # trace: "from"
     return header, log

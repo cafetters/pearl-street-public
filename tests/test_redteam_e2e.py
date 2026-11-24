@@ -36,7 +36,7 @@ def test_two_rounds_find_confirm_catalog_and_regress(tmp_path):
     assert e["triage"]["attributable_gain_usd"]["A"] == pytest.approx(400.0, abs=0.01)
     blocked = {d["name"]: (d["blocked"], d["blocked_by"]) for d in e["defenses"]}
     assert blocked == {"gateway_grant": (True, "no_gain_no_harm"), "reference_power_cap": (True, "no_gain_no_harm"),
-                       "register_power_check": (True, "run_stopped_at_registration")}
+                       "register_power_check": (True, "no_gain_no_harm")}     # D101: excluded, the run goes on
     assert e["found_by"]["A"]["backend"] == "fake_attacker:over_register"
     assert r1["spend"]["spent_usd"] > 0 and not r1["spend"]["cap_hit"]          # fake calls priced at the D94 table
     assert r1["cache"]["misses"] > 0 and r1["cache"]["sha256"]

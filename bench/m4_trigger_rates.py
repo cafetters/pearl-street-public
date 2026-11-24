@@ -27,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from bench import roster_cover as RC
 
 TZ = "America/Chicago"
 TOL_FLOOR_USD = 10.0
@@ -53,6 +54,7 @@ def count_events(trace: Path) -> dict:
     """Per-agent T1/T2/T3 counts, fleet-wide T6 per local day, the roster and the run's local days."""
     with open(trace, encoding="utf-8") as f:
         header = json.loads(next(f))
+        RC.guard(header, "bench.m4_trigger_rates", trace)     # D101: not built for exclusions
         roster = list(header.get("roster") or [])
         if not roster:
             raise CheckFailed(f"{trace}: header has no roster")

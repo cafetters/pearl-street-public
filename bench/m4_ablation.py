@@ -20,6 +20,7 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
+from bench import roster_cover as RC
 
 
 class CheckFailed(Exception):
@@ -41,6 +42,7 @@ def _spec(cfg: dict) -> dict | None:
 def load(run_dir) -> dict:
     d = Path(run_dir)
     s = json.loads((d / "summary.json").read_text(encoding="utf-8"))
+    RC.guard(s.get("header"), "bench.m4_ablation")     # D101: not built for exclusions
     head = s.get("header") or {}
     roster = list(head.get("roster") or [])
     if not roster:

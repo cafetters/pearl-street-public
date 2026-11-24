@@ -22,6 +22,7 @@ import numpy as np
 from bench import d56_resettle as D
 from bench.d56_resettle import CheckFailed, K
 from bench.d58_horizon import CELLS
+from bench import roster_cover as RC
 
 REPO = Path(__file__).resolve().parents[1]
 FOCUS = ["PVB_39", "PVB_22", "PVB_13", "DC_07", "PVB_25"]     # the two failing agents and the three nearest the line
@@ -48,6 +49,7 @@ def load_dn(run: str):
     from sim.data import load_config, load_slice
     R = REPO / "runs" / run
     summ = json.loads((R / "summary.json").read_text())
+    RC.guard(summ.get("header"), "bench.d58_sites")     # D101: not built for exclusions
     roster = list(summ["header"]["roster"])
     (h,) = list(summ["exchange_by_headroom_mw"])
     cfg = load_config(REPO / "configs" / "h2h" / f"{run}.yaml")

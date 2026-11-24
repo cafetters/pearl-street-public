@@ -33,6 +33,7 @@ import numpy as np
 from bench import d56_resettle as D
 from bench import d58_horizon as H
 from bench.d56_resettle import CheckFailed
+from bench import roster_cover as RC
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "runs" / "d58m"
@@ -264,7 +265,9 @@ def cell_cmd(run: str, out: Path) -> int:
 
 
 def summary(run: str) -> dict:
-    return json.loads((REPO / "runs" / run / "summary.json").read_text())
+    s = json.loads((REPO / "runs" / run / "summary.json").read_text())
+    RC.guard(s.get("header"), "bench.d58_margin")     # D101: not built for exclusions
+    return s
 
 
 def load(run: str, comparator: bool = False) -> dict:

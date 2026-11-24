@@ -238,13 +238,16 @@ def test_rebound_priority_orders_cap_against_delivery():
         assert (p.sh.sum() > 1.0) == expect_short
 
 
-def test_run_stops_if_a_roster_agent_is_not_registered(tmp_path, monkeypatch):
+def test_a_rejected_registration_leaves_the_agent_out_and_the_run_goes_on(tmp_path, monkeypatch):
+    """Was: the run stops if a roster agent is not registered. D101 (built Nov 23): the agent is left out of the market
+    with its status and the run goes on."""
     import sim.run_m1 as R
     real = R.daily_budgets
     monkeypatch.setattr(R, "daily_budgets", lambda *a, **k: ({d: v + 1.0 for d, v in real(*a, **k)[0].items()}, {}))
     cfg = {**CFG_M11, "rounds": "info", "daily_energy": True}
-    with pytest.raises(RuntimeError, match="not registered"):
-        run_variant(cfg, synthetic_slice(), np.arange(2), tmp_path, headroom_mw=0.1)
+    r = run_variant(cfg, synthetic_slice(), np.arange(2), tmp_path, headroom_mw=0.1)
+    assert set(r["roster_status"].values()) == {"excluded: registration rejected"}
+    assert set(r["roster_excluded_reason"]) == set(r["roster_status"])
 
 
 def test_first_nomination_goes_out_before_the_bid_so_prep_is_measured_against_it():

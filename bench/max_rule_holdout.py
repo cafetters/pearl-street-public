@@ -23,6 +23,7 @@ import numpy as np
 from bench import d56_resettle as D
 from bench import d58_horizon as H
 from bench.item7_resettle import max_first_call_steps
+from bench import roster_cover as RC
 
 TOL_C_USD = 1e-3          # (c), per agent (owner, Nov 4): above the trace's price-rounding error, below any rule error
 TOL_RECON_USD = 0.01      # (e) reconciliation
@@ -38,6 +39,7 @@ def offline_vs_inrun(trace: Path) -> dict:
     a nomination at or after its gate, or nominations that don't add up to the binding aggregate."""
     lines = Path(trace).read_text(encoding="utf-8").splitlines()
     header = json.loads(lines[0])
+    RC.guard(header, "bench.max_rule_holdout", trace)     # D101: not built for exclusions
     if (header.get("exchange") or {}).get("settlement_rule") != "max_first_call":
         raise CheckFailed(f"{trace}: not a max_first_call run")
     roster = list(header["roster"])

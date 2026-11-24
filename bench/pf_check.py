@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from sim import grid as G
+from bench import roster_cover as RC
 
 GUARD_MW = 1e-6
 
@@ -56,6 +57,7 @@ def telemetry_pnet(trace: Path, iso: list) -> tuple[np.ndarray, np.ndarray]:
     pos = {t: i for i, t in enumerate(iso)}
     with open(trace, encoding="utf-8") as f:
         head = json.loads(next(f))
+        RC.guard(head, "bench.pf_check", trace)     # D101: not built for exclusions
         roster = list(head.get("roster") or [])
         if not roster:
             raise CheckFailed(f"{trace}: no roster in the header")
@@ -103,6 +105,7 @@ def check_run(run_dir, data_dir=None) -> dict:
     if len(ex_traces) != 1:
         raise CheckFailed(f"{run_dir}: expected one exchange trace, found {len(ex_traces)}")
     head = json.loads(ex_traces[0].open(encoding="utf-8").readline())
+    RC.guard(head, "bench.pf_check", run_dir)     # D101: not built for exclusions
     cfg = head["config"]
     data_dir = Path(data_dir) if data_dir else (REPO / "../data").resolve()
     s = load_slice(data_dir, cfg["start"], cfg["end"], cfg.get("slice_tz", "America/Chicago"))

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
+from bench import roster_cover as RC
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "runs" / "h2h"
@@ -110,6 +111,7 @@ def row(arm, win, h):
         msg = stopped(arm, win, h)
         return None if msg is None else {"arm": arm, "window": win, "h": h, "stopped": msg}
     s = json.loads(path.read_text())
+    RC.guard(s.get("header"), "bench.h2h_report")     # D101: not built for exclusions
     e = s["exchange_by_headroom_mw"][str(h)]
     nh = e["net_harm"]
     tc = e["target_check_metered"]

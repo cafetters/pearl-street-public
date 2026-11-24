@@ -3,7 +3,7 @@
  "title": "An enrolled agent that never registers stops the whole run (denial of service)",
  "class": "liveness (denial of service)",
  "check": "liveness",
- "status": "open in the simulator (sim/run_m1.py roster stop); blocked in the red-team harness by auto-registration",
+ "status": "fixed in the simulator by D101 (Nov 23): the agent is excluded ('excluded: never registered') and the run goes on; the harness still auto-registers a silent attacker",
  "round": "hand-written (owner, Nov 18, item 4)",
  "attackers": [
   "A"
@@ -39,6 +39,7 @@
   "The harness auto-registers a silent attacker at its demonstrated power after the registration pause, logged auto_registered and inert (redteam/world.py; owner item 4). That keeps rounds running; it is not the fix.",
   "Same class: register_power_check (rt-0000's exchange defense) rejects an over-claim, which also stops the run.",
   "Seen with it [sim, synthetic]: with D78 silent_reference off, an auto-registered silent agent left B and C $1.10 and $0.66 below their twins (a silent agent freezes its zone's price, HW9 item 5); with the red-team flags on (silent_reference included) no bystander is below its twin and the silent attacker is $73.54 below its own. Red-team configs set silent_reference on (owner item 5); tested in tests/test_redteam_regressions.py.",
-  "Fix proposal staged in docs/private/m5_plan_updates.md (sim/run_m1.py not edited: m2b-dc is editing it)."
+  "Fix proposal staged in docs/private/m5_plan_updates.md (sim/run_m1.py not edited: m2b-dc is editing it).",
+  "Fixed Nov 23 (D101, branch dc-setting): sim/run_m1.py no longer stops the run; a rejected or missing registration leaves that agent out of the market with a roster_status, its battery acting alone (tests/test_d101_roster.py, tests/test_redteam_regressions.py::test_rt0001_is_fixed_in_the_simulator)."
  ]
 }

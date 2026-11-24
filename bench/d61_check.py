@@ -37,6 +37,7 @@ import json
 import sys
 from pathlib import Path
 
+from bench import roster_cover as RC
 from bench.tolerances import GAIN_GUARD_USD, HARM_TOL_USD     # condition 3 (owner, Nov 5): the tolerances' home
 
 GAIN_TOL_USD = GAIN_GUARD_USD       # float guard (pre-registered): above it counts as a gain
@@ -59,6 +60,7 @@ def load_run(run_dir) -> dict:
     """Header, per-agent values and the exchange trace's messages of one run folder."""
     run_dir = Path(run_dir)
     summary = json.loads((run_dir / "summary.json").read_text())
+    RC.require_all_active(summary["header"], "bench.d61_check")     # D101: not built for exclusions
     (h, ev), = summary["exchange_by_headroom_mw"].items()
     lines = _trace(run_dir).read_text().splitlines()
     header = json.loads(lines[0])

@@ -80,7 +80,7 @@ def objective(B, x, z, peak):
     return float(1e-6 * lp + z[0]) if peak else float(lp + z.sum())
 
 
-def solve(B, peak=False, cap_kw=None, dual=True, peak_from=0, pre_cap_kw=None, network=None):
+def solve(B, peak=False, cap_kw=None, dual=True, peak_from=0, pre_cap_kw=None, network=None, dc=None):
     """One LP over all agents and the whole slice. dual=False runs plain build() with scipy's linprog.
     peak_from, pre_cap_kw: D57's controllable ceiling (bench.bench.build); the defaults give the LP as before."""
     orig = B.linprog
@@ -91,14 +91,22 @@ def solve(B, peak=False, cap_kw=None, dual=True, peak_from=0, pre_cap_kw=None, n
         kw = {} if (not peak_from and pre_cap_kw is None) else {"peak_from": peak_from, "pre_cap_kw": pre_cap_kw}
         if network is not None:
             kw["network"] = network
+        if dc is not None:
+            kw["dc"] = dc
         x, z = B.build(list(range(B.N)), 0, B.T, B.S0, B.S0, cap_kw=cap_kw, peak=peak, **kw)
     finally:
         B.linprog = orig
+    served = None
+    if dc is not None:                            # M2b: the served-workload columns are the last variables
+        nd = len(dc["agents"]) * B.T
+        served, z = z[len(z) - nd:].reshape(len(dc["agents"]), B.T), z[:len(z) - nd]
     ns = None
     if network is not None:                       # M2c: the K x T network slacks follow the usual extras
         nk = len(network["g"])
         ns, z = z[len(z) - nk * B.T:].reshape(nk, B.T), z[:len(z) - nk * B.T]
     out = {"x": x, "z": z, "secs": time.time() - tic, "obj_recomputed": objective(B, x, z, peak)}
+    if served is not None:
+        out["dc_served"] = served
     if ns is not None:
         keys = network.get("keys") or [f"k{i}" for i in range(len(ns))]
         out["network_slack_mw"] = ns.max(axis=1)
@@ -459,12 +467,95 @@ def main_network(cfg_path):
     return out
 
 
+def dc_lp_spec(s, cfg):
+    """M2b: the LP's deferral input for a slice: every data center with session data, at its position in the slice,
+    with its generated workload and sessions from the simulator's data (sim.data.load_dc)."""
+    from sim.data import load_dc
+    ids, g, sess = load_dc(cfg["data_dir"], cfg["start"], cfg["end"], cfg["slice_tz"])
+    if g.shape[1] != len(s.ts_utc):
+        raise ValueError(f"dc workload has {g.shape[1]} steps, the slice {len(s.ts_utc)}")
+    pos = {str(a): i for i, a in enumerate(s.ids)}
+    keep = [m for m, a in enumerate(ids) if str(a) in pos]
+    from sim.data import load_dc_room
+    _, room = load_dc_room(cfg["data_dir"], cfg["start"], cfg["end"], cfg["slice_tz"])     # Nov 19: site capacity
+    return {"ids": [str(ids[m]) for m in keep], "agents": [pos[str(ids[m])] for m in keep],
+            "generated": [g[m] for m in keep], "sessions": [sess[ids[m]] for m in keep],
+            "room": [room[m] for m in keep]}
+
+
+def main_dc(cfg_path):
+    """M2b pass item (c): the LP ceiling with data-center deferral next to the battery-only ceiling, cold and (when
+    the config has a binding call) controllable (D57). Writes ceiling_dc.json into the window's M0 folder; the
+    existing ceiling files are never touched. Report: both peaks, whether each solved, battery-plus-load at or below
+    battery-only (1e-3 MW LP tolerance), and the data centers' share of the ceiling's relief from the recorded peak."""
+    from sim.run_m1 import controllable_from
+    cfg = load_config(cfg_path)
+    s = load_slice(cfg["data_dir"], cfg["start"], cfg["end"], cfg["slice_tz"])
+    B = load_bench(s)
+    use_slice(B, s)
+    from bench.bench import DT
+    dc = dc_lp_spec(s, cfg)
+    bess = s.agent["bess"]
+    base = {"c": np.maximum(-bess, 0), "d": np.maximum(bess, 0), "u": s.agent["curt"]}
+    base_net = net_load(B, **base)
+    out = {"header": run_header("bench/m0.py --dc", cfg), "data_centers": dc["ids"],
+           "generated_kwh": {a: float(np.sum(g) * DT) for a, g in zip(dc["ids"], dc["generated"])}, "variants": {}}
+    variants = [("cold", {})]
+    try:
+        pf = controllable_from(cfg, s)
+    except Exception:            # noqa: BLE001  configs without a binding call have no controllable variant
+        pf = 0
+    if pf > 0:
+        variants.append(("controllable", {"peak_from": pf, "pre_cap_kw": float(base_net[:pf].max())}))
+    from sim import dc_defer as DCD
+    for name, kw in variants:
+        pf_ = kw.get("peak_from", 0)
+        row = {"peak_from_step": pf_}
+        try:
+            bo = solve(B, peak=True, **kw)
+            row["battery_only_solved"] = True
+        except Exception as e:   # noqa: BLE001  reported, never hidden
+            bo, row["battery_only_solved"], row["battery_only_error"] = None, False, str(e)[:200]
+        try:
+            wd = solve(B, peak=True, dc=dc, **kw)
+            row["with_deferral_solved"] = True
+        except Exception as e:   # noqa: BLE001
+            wd, row["with_deferral_solved"], row["with_deferral_error"] = None, False, str(e)[:200]
+        rec = float(base_net[pf_:].max())
+        row["recorded_peak_mw"] = rec / 1e3
+        if bo is not None:
+            row["battery_only_peak_mw"] = float(net_load(B, **dispatch(bo["x"]))[pf_:].max()) / 1e3
+        if wd is not None:
+            gsum = sum(np.asarray(g, float) for g in dc["generated"])
+            ssum = wd["dc_served"].sum(0)
+            w_net = net_load(B, **dispatch(wd["x"])) - gsum + ssum
+            row["with_deferral_peak_mw"] = float(w_net[pf_:].max()) / 1e3
+            row["dc_rule_violations"] = {a: DCD.check(wd["dc_served"][m], dc["generated"][m], dc["sessions"][m], DT,
+                                                      room=dc["room"][m])
+                                         for m, a in enumerate(dc["ids"])}
+            row["dc_rule_violations_total"] = int(sum(len(v) for v in row["dc_rule_violations"].values()))
+        if bo is not None and wd is not None:
+            b_, w_ = row["battery_only_peak_mw"], row["with_deferral_peak_mw"]
+            row["with_deferral_le_battery_only"] = bool(w_ <= b_ + 1e-3)
+            relief = row["recorded_peak_mw"] - w_
+            row["dc_share_of_ceiling_relief"] = (b_ - w_) / relief if relief > 1e-6 else None
+        out["variants"][name] = row
+    od = m0_dir(cfg)
+    od.mkdir(parents=True, exist_ok=True)
+    (od / "ceiling_dc.json").write_text(json.dumps(out, indent=2))
+    print(json.dumps({k: {kk: v.get(kk) for kk in ("battery_only_peak_mw", "with_deferral_peak_mw",
+                      "with_deferral_le_battery_only", "dc_share_of_ceiling_relief")} for k, v in out["variants"].items()}))
+    return out
+
+
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if a not in ("--controllable", "--network")]
+    args = [a for a in sys.argv[1:] if a not in ("--controllable", "--network", "--dc")]
     path = args[0] if args else REPO / "configs" / "dev_2day.yaml"
     if "--controllable" in sys.argv[1:]:
         main_controllable(path)
     elif "--network" in sys.argv[1:]:
         main_network(path)
+    elif "--dc" in sys.argv[1:]:
+        main_dc(path)
     else:
         main(path)

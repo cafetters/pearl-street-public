@@ -305,21 +305,28 @@ def controllable_from(cfg, s: Slice) -> int:
     """D57: the first step any binding nomination can move, the earliest binding call's deadline (its window starts
     there). Fixed by the operator's schedule at construction, from the config alone (nomination_span moves only a
     window's end). 0 when the config has no binding call."""
-    nominations, rounds = settings(cfg)
+    nominations, _ = settings(cfg)
     if not nominations:
         return 0
-    clock = Clock(s.ts_utc, TZ)
-    dt, T = clock.dt_h, len(clock.iso)
-    fl = m2a_flags(cfg)
-    op = GridOperator(cfg["operator_id"], clock.iso, clock.end_iso(T - 1), clock.local, "controllable_from",
-                      cfg["zone"], 0.0, cfg["layer_mw"] * 1000.0, cfg["price_cap_usd_mwh"], cfg["post_hour_local"],
-                      round(cfg["gate_lead_h"] / dt), rounds=rounds, nominations=nominations,
-                      nom_lead_steps=round(cfg.get("nomination_lead_h", 1) / dt),
-                      info_hour=cfg["price_publish_hour_local"], prep_clearing=fl["prep_clearing"],
-                      priorities=fl["sequential_clearing"], price_mode=fl["price_mode"],
-                      nomination_span=nomination_span(cfg))
+    op = operator_schedule(cfg, s.ts_utc)
     deadlines = [d for day in op.days for _, d, binding in day["calls"] if binding and d < op.T]
     return min(deadlines) if deadlines else 0
+
+
+def operator_schedule(cfg, ts_utc) -> GridOperator:
+    """The operator's day schedule (days, gates, calls) for a config and a slice's timestamps, with no run: used by
+    controllable_from and by bench.m2b_judge (the operator's daily targets)."""
+    nominations, rounds = settings(cfg)
+    clock = Clock(ts_utc, TZ)
+    dt, T = clock.dt_h, len(clock.iso)
+    fl = m2a_flags(cfg)
+    return GridOperator(cfg["operator_id"], clock.iso, clock.end_iso(T - 1), clock.local, "controllable_from",
+                        cfg["zone"], 0.0, cfg["layer_mw"] * 1000.0, cfg["price_cap_usd_mwh"], cfg["post_hour_local"],
+                        round(cfg["gate_lead_h"] / dt), rounds=rounds, nominations=nominations,
+                        nom_lead_steps=round(cfg.get("nomination_lead_h", 1) / dt),
+                        info_hour=cfg["price_publish_hour_local"], prep_clearing=fl["prep_clearing"],
+                        priorities=fl["sequential_clearing"], price_mode=fl["price_mode"],
+                        nomination_span=nomination_span(cfg))
 
 
 def controllable_block(net, selfish_net, clock, pf: int, m0c) -> dict:
@@ -432,14 +439,141 @@ def t4_threshold(cfg, s: Slice, trailing_days: int = 30) -> float | None:
     return float(np.percentile(sp.to_numpy(), 75))
 
 
+def dc_agent_sessions(dc_spec: dict, aid: str, exchange: bool) -> list:
+    """M2b: the sessions a data-center agent plans with. Its true sessions (the simulator's session data), except
+    that in an exchange run dc_spec["declared"] may give an agent a declaration of its own (D100 (c), the
+    tighter-deadline attack; report only). The reference, the meter and the checks never read the declaration."""
+    dec = (dc_spec.get("declared") or {}) if exchange else {}
+    return dec[aid] if aid in dec else dc_spec["sessions"][aid]
+
+
+def dc_block(r: dict, dc_spec: dict, roster, dt: float) -> dict:
+    """M2b pass item (a): each data center's deferral checked against the simulator's sessions (dc_defer.check,
+    unrounded, 1e-6 guards). Every data center in the run header's roster with session data must be checked; a
+    missing one fails."""
+    from sim import dc_defer as DCD
+    served = r.get("dc_served") or {}
+    expect = [str(a) for a in roster if str(a) in dc_spec["generated"]]
+    agents = {}
+    for aid, sv in served.items():
+        g = np.asarray(dc_spec["generated"][str(aid)], float)
+        v = DCD.check(sv, g, dc_spec["sessions"][str(aid)], dt, room=(dc_spec.get("room") or {}).get(str(aid)))
+        agents[str(aid)] = {"violations": v, "generated_kwh": float(g.sum() * dt), "served_kwh": float(np.sum(sv) * dt),
+                            "max_backlog_kwh": float((np.cumsum(g) - np.cumsum(sv)).max() * dt) if len(g) else 0.0,
+                            "clipped_sessions": int(sum(x.clipped for x in DCD.clip(dc_spec["sessions"][str(aid)], len(g))))}
+    missing = sorted(set(expect) - set(agents))
+    total = int(sum(len(a["violations"]) for a in agents.values()))
+    return {"rule": "zero deferral-rule violations per data center (never ahead of generation, every session by its "
+                    "deadline, power ceilings held, the window's energy unchanged), unrounded with 1e-6 guards",
+            "agents": agents, "violations_total": total, "missing_from_check": missing,
+            "pass": bool(total == 0 and not missing)}
+
+
+DC_TIGHT_STEPS = 96     # D100 (c): a tighter declared deadline, the end of the session's own local day (true: 04:30 to 10:30 next day)
+
+# D111 (owner, Nov 23): how data centers take part. battery (the default, also when the key is absent) is today's
+# behaviour; off keeps them in the simulation but out of the market (D101 exclusion, acting alone); deferral is M2b's
+# round-2 design (dc_deferral + dc_joint), merged as a demo-only setting.
+DC_MODES = ("off", "battery", "deferral")
+DC_OFF_STATUS = "excluded: data centers off (setting)"          # D101's fourth status (D111)
+DEMO_ONLY = ("DEMO ONLY, not a result: data-center workload deferral failed M2b round 2 (net harm in 11 of 19 windows; "
+             "in 4 an evening pile-up of postponed work raised the peak), a known design flaw in the current price "
+             "signal; it also rests on the dataset's deferrable data-center load (about 16% of load, every day), which "
+             "is optimistic against real data centers")
+# D101 (owner, Nov 19): every roster agent gets exactly one status in roster_status
+ROSTER_STATUSES = ("active", "excluded: registration rejected", "excluded: never registered", DC_OFF_STATUS)
+
+
+def data_centers_setting(cfg: dict) -> dict:
+    """D111: cfg with `data_centers` applied (a copy; unchanged when the key is absent). deferral sets dc_deferral and
+    dc_joint and needs price_mode; off and battery refuse dc_deferral or dc_joint."""
+    if "data_centers" not in cfg:
+        return cfg
+    mode = cfg["data_centers"]
+    if mode is False:         # YAML 1.1 reads an unquoted `data_centers: off` as false
+        mode = "off"
+    if mode not in DC_MODES:
+        raise ValueError(f"data_centers must be one of {DC_MODES}, not {mode!r}")
+    out = {**cfg, "data_centers": mode}
+    if mode == "deferral":
+        if cfg.get("dc_deferral") is False or cfg.get("dc_joint") is False:
+            raise ValueError("data_centers: deferral conflicts with dc_deferral or dc_joint set false")
+        if not cfg.get("price_mode"):
+            raise ValueError("data_centers: deferral needs price_mode: true")
+        out["dc_deferral"] = out["dc_joint"] = True
+    elif cfg.get("dc_deferral") or cfg.get("dc_joint"):
+        raise ValueError(f"data_centers: {mode} conflicts with dc_deferral or dc_joint (use data_centers: deferral)")
+    return out
+
+
+def data_center_ids(s: Slice, part) -> set[str]:
+    """Roster agents whose dataset entity_type is datacenter."""
+    ty = dict(zip(s.meta["entity_id"].astype(str), s.meta["entity_type"].astype(str)))
+    return {str(s.ids[i]) for i in part if ty.get(str(s.ids[i])) == "datacenter"}
+
+
+def dc_spec_from_config(cfg, s: Slice, part, n_warm: int = 0, ablation_flag=None) -> dict | None:
+    """M2b (dc_deferral: true): each participating data center's generated workload and sessions from the simulator's
+    session data (sim.data.load_dc). dc_declare_tighter: [agent ids] (D100 (c), report only) gives those agents a
+    declaration whose deadlines end with the session's own day; only the agent plans with it."""
+    if not cfg.get("dc_deferral", False):
+        if cfg.get("dc_declare_tighter"):
+            raise ValueError("dc_declare_tighter needs dc_deferral: true")
+        if cfg.get("dc_joint"):
+            raise ValueError("dc_joint needs dc_deferral: true")
+        return None
+    if n_warm or ablation_flag:
+        raise ValueError("dc_deferral is not built for warmup_days or --ablation-one")
+    from dataclasses import replace as _replace
+
+    from sim.data import load_dc
+    ids, g, sess = load_dc(cfg["data_dir"], cfg["start"], cfg["end"], cfg["slice_tz"])
+    if g.shape[1] != len(s.ts_utc):
+        raise ValueError(f"dc workload has {g.shape[1]} steps, the slice {len(s.ts_utc)}")
+    inpart = {str(s.ids[i]) for i in part}
+    keep = [m for m, a in enumerate(ids) if str(a) in inpart]
+    spec = {"generated": {str(ids[m]): g[m] for m in keep}, "sessions": {str(ids[m]): sess[ids[m]] for m in keep}}
+    from sim.data import load_dc_room
+    rid, room = load_dc_room(cfg["data_dir"], cfg["start"], cfg["end"], cfg["slice_tz"])   # Nov 19: site capacity
+    if list(map(str, rid)) != list(map(str, ids)):
+        raise ValueError("dc room and sessions list different data centers")
+    spec["room"] = {str(ids[m]): room[m] for m in keep}
+    tight = [str(a) for a in (cfg.get("dc_declare_tighter") or [])]
+    bad = [a for a in tight if a not in spec["generated"]]
+    if bad:
+        raise ValueError(f"dc_declare_tighter names agents with no data-center sessions: {bad}")
+    if tight:
+        spec["declared"] = {a: [_replace(x, deadline=min(x.deadline, x.start + DC_TIGHT_STEPS))
+                                for x in spec["sessions"][a]] for a in tight}
+    return spec
+
+
+def dc_relief_share(selfish_net, ex_net, selfish_load_eff, ex_load_eff, dc_rows, peak_from: int = 0) -> dict:
+    """M2b pass item (e), report only: at the acting-alone run's peak step (headline steps, D57), the system relief
+    (acting alone minus exchange net load) and the part of it from data-center workload timing (the data centers'
+    effective load acting alone minus with the exchange)."""
+    sn, en = np.asarray(selfish_net, float), np.asarray(ex_net, float)
+    t = int(peak_from + np.argmax(sn[peak_from:]))
+    relief = float(sn[t] - en[t])
+    dcp = float((np.asarray(selfish_load_eff)[dc_rows, t] - np.asarray(ex_load_eff)[dc_rows, t]).sum()) if dc_rows else 0.0
+    return {"step": t, "relief_mw": relief / 1e3, "dc_part_mw": dcp / 1e3,
+            "dc_share": dcp / relief if abs(relief) > 1e-6 else None,
+            "dc_energy_moved_mwh": float(np.abs(np.asarray(selfish_load_eff)[dc_rows] - np.asarray(ex_load_eff)[dc_rows]).sum()) * 0.25 / 1e3 / 2
+            if dc_rows else 0.0}
+
+
 def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=None, off=(), prev: Slice | None = None,
-                suffix: str = "", window_start_utc: str | None = None, grid_zones: list | None = None) -> dict:
+                suffix: str = "", window_start_utc: str | None = None, grid_zones: list | None = None,
+                dc_spec: dict | None = None) -> dict:
     """window_start_utc (warm-up, set by main from warmup_days): the reported window starts there; the exchange
     settles money from there on, and the header records it. None: the window is the slice (today)."""
     tic = time.time()
     wall_start = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cfg = with_m5_defaults(cfg)          # D-a: both M5 defenses on unless the config says false; the header records it
+    cfg = data_centers_setting(cfg)      # D111 (unchanged without the key)
     span = nomination_span(cfg)
+    if cfg.get("dc_joint") and not cfg.get("price_mode"):      # M2b item 4: the joint planner is arm C only
+        raise ValueError("dc_joint needs price_mode: true")
     for key in ("declarations_into_1p", "void_rule"):     # D80/D81: one flag, declared_reference, for both halves
         if key in cfg:
             raise ValueError(f"unknown config key {key!r}: declarations into 1p and the void rule are one flag, "
@@ -507,6 +641,14 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
         header["nomination_span"] = span
     if window_start_utc is not None:      # warm-up: only when set
         header["warmup"] = {"warmup_days": warmup_days(cfg), "window_start_utc": window_start_utc}
+    dc_off: set[str] = set()              # D111: data centers kept out of the market (exchange runs only)
+    if "data_centers" in cfg:             # only when set, so runs without it keep their header unchanged
+        header["data_centers"] = cfg["data_centers"]
+        if cfg["data_centers"] == "off" and ex is not None:
+            dc_off = data_center_ids(s, part)
+            header["data_centers_excluded"] = sorted(dc_off)
+    if cfg.get("dc_deferral"):            # D111: demo only, however deferral was switched on
+        header["demo_only"] = DEMO_ONLY
     attackers = list(cfg.get("attackers") or [])           # D61: wrappers around honest agents, named in the header
     if attackers and ex is not None:
         header["attackers"] = attackers
@@ -539,6 +681,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
     usable = 0.8 * fleet.CAP
     demo_pv = demonstrated_pv(prev, part, fleet.P)
     agents, clipping = [], {}
+    raw_agents: list[BatteryAgent] = []             # D101: each agent before any wrapper (participation is set there)
+    dc_agents: dict[int, BatteryAgent] = {}         # M2b: position -> data-center agent with deferral
     for j, i in enumerate(part):
         b = Battery(P=fleet.P[j], CAP=fleet.CAP[j], ETA=fleet.ETA[j], SD=fleet.SD[j], POI=fleet.POI[j],
                     s_term=fleet.S0[j])
@@ -551,7 +695,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
             if cut:
                 clipping[str(s.ids[i])] = cut
         ag = BatteryAgent(s.ids[i], b, pv[j], curt[j], load[j], iso, end_iso, dt, run_id, cfg["zone"],
-                          participate=ex is not None, wear=cfg["wear_usd_mwh"], min_offer_kw=cfg["min_offer_kw"],
+                          participate=ex is not None and str(s.ids[i]) not in dc_off,     # D111 off: acting alone
+                          wear=cfg["wear_usd_mwh"], min_offer_kw=cfg["min_offer_kw"],
                           firm_offers=fl["firm_offers"], send_prep=fl["prep_clearing"], no_rebound=fl["no_rebound"],
                           daily_budget=budget, local_dates=local_dates, premium=premium,
                           prep_hours=cfg.get("rebound_hours", 24.0),
@@ -561,7 +706,17 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                           cap_rebase=fl["cap_rebase"] and fl["no_rebound"],
                           plan_to_nomination=fl["plan_to_nomination"], use_room=fl["publish_room"],
                           price_mode=fl["price_mode"], prox_eps_usd_mwh=cfg.get("prox_deadzone_usd_mwh", 0.05),
-                          peak_response_margin_usd_mwh=margin)
+                          peak_response_margin_usd_mwh=margin,
+                          **({"dc": {"generated": dc_spec["generated"][str(s.ids[i])],
+                                     "sessions": dc_agent_sessions(dc_spec, str(s.ids[i]), ex is not None),
+                                     "room": (dc_spec.get("room") or {}).get(str(s.ids[i])),
+                                     # M2b item 4: joint planning in the exchange run only; acting alone keeps
+                                     # the selfish deferral
+                                     **({"joint": True} if (cfg.get("dc_joint") and ex is not None) else {})}}
+                             if (dc_spec and str(s.ids[i]) in dc_spec["generated"]) else {}))
+        if getattr(ag, "dc", None) is not None:     # M2b: the raw agent, before any wrapper, holds its schedule
+            dc_agents[j] = ag
+        raw_agents.append(ag)
         if strat is not None:      # strategy inside, attack wrapper outside (D61: the menu doesn't bind attackers)
             ag = strat.wrap(ag)
         if ex is not None:
@@ -571,12 +726,22 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
         agents.append(ag)
         bus.attach(ag.id, ag)
     op, fc_op = None, operator_forecast(s, part, cfg["forecast_noise_sigma"], cfg["seed"])
+    # D101: each roster agent's status in the market (exchange runs); act[j] is False once agent j is excluded
+    roster_status = {str(ag.id): (DC_OFF_STATUS if str(ag.id) in dc_off else "active") for ag in agents} if ex else {}
+    roster_reason: dict[str, str] = {}
+    act = np.array([str(ag.id) not in dc_off for ag in agents], bool)
+
+    def idle_net_active():
+        """The participants' total site net with batteries idle; an excluded agent's load is background load the
+        operator's forecast already holds (its zone target = system target - (forecast + idle_net))."""
+        x = pv - curt - load
+        return x.sum(0) if act.all() else x[act].sum(0)
     if ex:
         op = GridOperator(cfg["operator_id"], iso, end_iso, clock.local, run_id, cfg["zone"], headroom_mw * 1000.0,
                           cfg["layer_mw"] * 1000.0, cfg["price_cap_usd_mwh"], cfg["post_hour_local"],
                           round(cfg["gate_lead_h"] / dt), rounds=rounds, nominations=nominations,
                           nom_lead_steps=round(cfg.get("nomination_lead_h", 1) / dt),
-                          idle_net=(pv - curt - load).sum(0), info_hour=cfg["price_publish_hour_local"],
+                          idle_net=idle_net_active(), info_hour=cfg["price_publish_hour_local"],
                           prep_clearing=fl["prep_clearing"], priorities=fl["sequential_clearing"],
                           price_mode=fl["price_mode"], nomination_span=span)
         bus.attach(op.id, op)
@@ -587,6 +752,24 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
     referee_mode = cfg.get("referee", "abort")
     failures = [] if referee_mode == "collect" else None
     base_x = pv - curt - load
+    load_eff = load.copy()                          # M2b: metered load, load - generated + served for data centers
+
+    dc_ref_served: dict[str, list] = {}              # M2b: the reference's deferral at each gate, per data center
+
+    def ref_base_x(j, pf_, k_=None):
+        """M2b, D100: 1p's acting-alone model includes the data center's own deferral, scheduled with the acting-alone
+        model (dc_defer.schedule, as the agent does with no exchange) on the same forecast. Generation, deadlines and
+        energy come from the simulator's session data (dc_spec), never from the agent's own declaration."""
+        if j not in dc_agents:
+            return base_x[j]
+        from sim import dc_defer as DCD
+        aid = str(dc_agents[j].id)
+        g_ = np.asarray(dc_spec["generated"][aid], float)
+        p_ = np.asarray(pf_, float)
+        p_ = np.where(np.isfinite(p_), p_, np.nanmean(p_) if np.isfinite(p_).any() else 0.0)
+        sv = DCD.schedule(p_, g_, dc_spec["sessions"][aid], dt, room=(dc_spec.get("room") or {}).get(aid))
+        dc_ref_served.setdefault(aid, []).append({"k": k_, "served_kw": sv.copy()})
+        return base_x[j] + g_ - sv
     if ex is not None and ex.declared_reference:     # D82: the exchange checks each declaration with 1p's model
         ex.declaration_check = make_declaration_check(ex, bus, agents, usable, fleet.S0, pv - curt, base_x,
                                                       float(cfg["wear_usd_mwh"]), dt, iso)
@@ -613,6 +796,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
         if k == 0:
             if ex:     # demonstrated limits and the attested owner (D69 rule 6), before anyone registers
                 for j, ag in enumerate(agents):
+                    if not act[j]:          # D111 off: no paperwork for an agent kept out of the market
+                        continue
                     if fl["daily_energy"]:
                         n_meter += 1
                         mid = f"{cfg['metering_id']}:{n_meter}"
@@ -635,6 +820,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
             if ex and fl["price_mode"]:      # D53 refund reference: each agent's recorded site net (dataset schedule)
                 rec_site = base_x + a["bess"][part]
                 for j, ag in enumerate(agents):
+                    if not act[j]:
+                        continue
                     n_meter += 1
                     meter_send([M.encode(M.make("reference_net", cfg["metering_id"], "exchange", t, {
                         "asset_id": ag.asset_id, "window": {"start_utc": iso[0], "end_utc": end_iso},
@@ -643,13 +830,30 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
             for ag in agents:
                 bus.send(ag.start(0), ag.id)
             bus.flush()
-            if ex:      # every roster agent must be in the market, or the run is not worth finishing (CLAUDE.md)
-                regs = {m["msg_id"]: m["sender"] for m in bus.log if m["msg_type"] == "register"}
-                out = [regs[m["payload"]["ref_msg_id"]] for m in bus.log
-                       if m["msg_type"] == "reject" and m["payload"]["ref_msg_id"] in regs]
-                if out:
-                    logger.close()
-                    raise RuntimeError(f"roster agents not registered, run stopped: {sorted(out)}")
+            if ex:      # D101: a rejected or missing registration leaves that agent out; the run goes on
+                regs = {m["msg_id"]: str(m["sender"]) for m in bus.log if m["msg_type"] == "register"}
+                rejected = {regs[m["payload"]["ref_msg_id"]]: str(m["payload"].get("code"))
+                            for m in bus.log if m["msg_type"] == "reject"
+                            and m["payload"].get("ref_msg_id") in regs}
+                sent = set(regs.values())
+                for j, ag in enumerate(agents):
+                    aid = str(ag.id)
+                    if roster_status[aid] != "active":
+                        continue
+                    if aid in rejected:
+                        roster_status[aid] = "excluded: registration rejected"
+                        roster_reason[aid] = rejected[aid]
+                    elif aid not in sent:
+                        roster_status[aid] = "excluded: never registered"
+                    else:
+                        continue
+                    act[j] = False
+                    raw_agents[j].participate = False     # its battery runs its acting-alone plan, no messages
+                if not act.all():
+                    op.idle_net = idle_net_active()
+                    print(f"  D101: {int((~act).sum())} roster agent(s) out of the market: "
+                          f"{dict(sorted((a_, s_) for a_, s_ in roster_status.items() if s_ != 'active'))}",
+                          flush=True)
         if ex:
             n_before = len(bus.log)
             clock_send([M.encode(M.make("tick", cfg["clock_id"], "exchange", t, {}, f"clock:{k}", run_id))])
@@ -684,6 +888,8 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                 a0 = iso.index(w["start_utc"])
                 a1 = T if w["end_utc"] == end_iso else iso.index(w["end_utc"])
                 for j, ag in enumerate(agents):
+                    if not act[j]:          # D101: no idle reference for an agent out of the market
+                        continue
                     n_idle += 1
                     meter_send([M.encode(M.make("idle_reference", cfg["metering_id"], "exchange", t, {
                         "asset_id": ag.asset_id, "call_id": c["call_id"], "window": w,
@@ -710,14 +916,17 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                 a1 = T if w["end_utc"] == end_iso else iso.index(w["end_utc"])
                 reg_kw = reference_kw(bus.log, cfg, {ag.id: float(fleet.P[j]) for j, ag in enumerate(agents)})   # M5
                 for j, ag in enumerate(agents):
+                    if not act[j]:          # D101: no reference for an agent out of the market
+                        continue
+                    bxr = ref_base_x(j, pf, k)
                     if d62 and binding_gate:    # the same LP as selfish_site_net, kept as a Plan for D62's paths
-                        pl = selfish_plan(reg_kw[ag.id], usable[j], fleet.S0[j], pf, pv[j] - curt[j], base_x[j],
+                        pl = selfish_plan(reg_kw[ag.id], usable[j], fleet.S0[j], pf, pv[j] - curt[j], bxr,
                                           float(cfg["wear_usd_mwh"]), dt)
-                        q = None if pl is None else base_x[j] + pl.d - pl.c - pl.x
+                        q = None if pl is None else bxr + pl.d - pl.c - pl.x
                         if paths is None:
                             q1[j] = pl
                     else:
-                        q = selfish_site_net(reg_kw[ag.id], usable[j], fleet.S0[j], pf, pv[j] - curt[j], base_x[j],
+                        q = selfish_site_net(reg_kw[ag.id], usable[j], fleet.S0[j], pf, pv[j] - curt[j], bxr,
                                              float(cfg["wear_usd_mwh"]), dt)
                     if q is None:
                         logger.close()
@@ -730,7 +939,7 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                         q_reg = q
                         if not (np.all(np.isnan(pmax)) and np.all(np.isnan(floor))):
                             q = selfish_site_net(reg_kw[ag.id], usable[j], fleet.S0[j], pf, pv[j] - curt[j],
-                                                 base_x[j], float(cfg["wear_usd_mwh"]), dt, np.asarray(pmax, float),
+                                                 bxr, float(cfg["wear_usd_mwh"]), dt, np.asarray(pmax, float),
                                                  np.asarray(floor, float))
                         extra = {"net_kw_registered": [float(x) for x in q_reg[a0:a1]]}
                         if q is None:   # D82 backstop: never stop the run for one agent; void its declarations here
@@ -780,8 +989,11 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                 if first:
                     reg_kw = reference_kw(bus.log, cfg, {ag.id: float(fleet.P[j]) for j, ag in enumerate(agents)})
                     paths = [ModeledPaths(reg_kw[ag.id], usable[j], fleet.S0[j], pv[j] - curt[j], base_x[j],
-                                          float(cfg["wear_usd_mwh"]), dt) for j, ag in enumerate(agents)]
+                                          float(cfg["wear_usd_mwh"]), dt) if act[j] else None
+                             for j, ag in enumerate(agents)]
                 for j, ag in enumerate(agents):
+                    if paths[j] is None:    # D101: out of the market
+                        continue
                     st = paths[j].stage(k0, pf, peak, q1[j] if first else None)
                     n_meter += 1
                     meter_send([M.encode(M.make("modeled_response", cfg["metering_id"], "exchange", t, {
@@ -795,10 +1007,18 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
                 if bad:
                     logger.close()
                     raise RuntimeError(f"D62: modeled_response rejected: {bad[:3]}")
-        c, d, extra, soc = physics.step(fleet, soc, req[0], req[1], pv[:, k], curt[:, k] + req[2], load[:, k], dt)
+        lk = load[:, k]
+        if dc_agents:                                   # M2b: each data center's workload as it scheduled it
+            lk = lk.copy()
+            for j, dag in dc_agents.items():
+                lk[j] = load[j, k] - float(dc_spec["generated"][str(dag.id)][k]) + float(dag.dc_served[k])
+            load_eff[:, k] = lk
+        c, d, extra, soc = physics.step(fleet, soc, req[0], req[1], pv[:, k], curt[:, k] + req[2], lk, dt)
         C[:, k], D[:, k], X[:, k], SOC[:, k] = c, d, req[2] + extra, soc
-        site_net = pv[:, k] - curt[:, k] - X[:, k] + d - c - load[:, k]
+        site_net = pv[:, k] - curt[:, k] - X[:, k] + d - c - lk
         for j, ag in enumerate(agents):
+            if ex is not None and not act[j]:     # D101: the exchange gets no telemetry for an agent out of the market
+                continue
             n_meter += 1
             payload = {"asset_id": ag.asset_id, "soc_kwh": float(soc[j]), "meter_kw": float(d[j] - c[j])}
             if nominations:
@@ -832,7 +1052,13 @@ def run_variant(cfg, s: Slice, part, out_dir: Path, headroom_mw=None, rounds=Non
         with open(out_dir / variant / "agent_log.jsonl", "w", encoding="utf-8") as f:
             f.writelines(json.dumps(e) + "\n" for e in margin_log)
     edge = band_edge(ex, window_start_utc) if ex is not None and nominations else None
-    return {"variant": variant, "headroom_mw": headroom_mw, "C": C, "D": D, "X": X, "SOC": SOC, "fleet": fleet,
+    out_dc = {}
+    if dc_agents:                                       # M2b: effective load and each data center's served schedule
+        out_dc = {"load_eff": load_eff, "dc_served": {dag.id: np.asarray(dag.dc_served, float).copy()
+                                                      for dag in dc_agents.values()},
+                  "dc_ref_served": dc_ref_served}
+    return {**out_dc, "roster_status": roster_status, "roster_excluded_reason": roster_reason,     # D101
+            "variant": variant, "headroom_mw": headroom_mw, "C": C, "D": D, "X": X, "SOC": SOC, "fleet": fleet,
             "band_edge": edge,
             "log": bus.log, "refused": bus.refused, "agents": agents, "fc_op": fc_op, "operator": op, "rounds": rounds,
             "nominations": nominations and ex is not None, "header": header, "m2a": m2a, "v2": v2, "premium": premium,
@@ -862,6 +1088,9 @@ def evaluate(cfg, s: Slice, part, r: dict, rec_net, m0, selfish_run=None) -> dic
     pv, curt, load, bess = np.nan_to_num(a["pv"][part]), a["curt"][part], a["load"][part], a["bess"][part]
     C, D, X = r["C"], r["D"], r["X"]
     net = rec_net + (pv - curt + bess).sum(0) - (pv - curt - X + D - C).sum(0)
+    if "load_eff" in r:                                 # M2b: data centers' deferred workload moves net load
+        net = net + (r["load_eff"] - load).sum(0)
+        load = r["load_eff"]
     rt = s.system["price_rt"]
     energy = (rt * K * (pv - curt - X + D - C - load)).sum(1)
     wear = cfg["wear_usd_mwh"] * K * D.sum(1)
@@ -1101,6 +1330,9 @@ def m2a_metrics(cfg, s, part, r, sf, log, net, in_window, ids, clock, credits, c
             # warm-up: energy each arm brought into the window, valued like the energy left at the end
             start = ({"start_energy": float(r["SOC_start"][j] - sf["SOC_start"][j]) * end_price}
                      if r.get("SOC_start") is not None else {})
+            # M2b: a data center's workload bought at other steps than acting alone (load_eff), at real-time prices
+            if "load_eff" in r and "load_eff" in sf:
+                start["workload_timing"] = float(rt @ (r["load_eff"][j] - sf["load_eff"][j])) * K
             comp = {"lost_arbitrage_net_of_credits": -(float(da @ dn) * K - dwear) - credits[aid],
                     "da_rt_gap": -float((rt - da) @ dn) * K,
                     "extra_curtailment": float(rt @ dx) * K,
@@ -1241,16 +1473,18 @@ SIDE_BY_SIDE = ["peak_mw", "peak_vs_selfish_mw", "share_of_m0_ceiling", "unfille
 
 
 def net_harm(alone: np.ndarray, with_ps: np.ndarray, ids: list[str], roster: list[str], bystanders: int,
-             unrounded: bool = False) -> dict:
+             unrounded: bool = False, excluded: dict | None = None) -> dict:
     """No one is net harmed (PLAN.md section 8). alone: each agent's result acting alone (the selfish run);
     with_ps: its total result with Pearl Street (energy - wear + credits - charges - imbalance). An agent is harmed
     when it falls short by more than max(1% of |alone|, $10). The roster comes from the run header, and the check
-    fails if any agent on it is missing (CLAUDE.md)."""
+    fails if any agent on it is missing (CLAUDE.md). excluded (D101): roster agents out of the market, {id: status};
+    they are still checked (acting alone, nothing settles) and reported as excluded."""
     short = np.asarray(alone, float) - np.asarray(with_ps, float)
     tol = np.maximum(NET_HARM_REL * np.abs(alone), NET_HARM_ABS)
     harmed = short > tol
     missing = sorted(set(roster) - set(ids))
     return {
+        **({"excluded_agents": dict(sorted(excluded.items()))} if excluded else {}),
         "rule": "with Pearl Street >= acting alone - max(1% of acting alone, $10), every honest agent",
         "roster_size": len(roster), "agents_checked": len(ids), "missing_from_check": missing,
         "agents_harmed": int(harmed.sum()), "total_net_harm_usd": float(short[harmed].sum()),
@@ -1323,7 +1557,8 @@ def harm_components(rows, nh, alone) -> dict:
     harmed = [r for r, t in zip(rows, tol) if r["total"] > t]
     for r, v in ((r, nh["by_agent_usd"][r["agent"]]) for r in rows):
         assert abs(max(r["total"], 0.0) - v) < 0.02, (r["agent"], r["total"], v)
-    comps = COMPONENTS + (("start_energy",) if rows and "start_energy" in rows[0] else ())     # warm-up only
+    comps = COMPONENTS + tuple(c for c in ("start_energy", "workload_timing")     # warm-up only; M2b deferral only
+                               if rows and c in rows[0])
     tot = lambda rs: {c: round(float(sum(r[c] for r in rs)), 2) for c in comps + ("total",)}
     return {"harmed_agents": tot(harmed), "all_agents": tot(rows), "sum_check": "components sum to each agent's total",
             "end_kwh_vs_selfish_total": round(float(sum(r["end_kwh"] for r in rows)), 1),
@@ -1382,6 +1617,9 @@ def share(peak_kw, m0):
 
 def main(cfg_path):
     cfg = with_m5_defaults(load_config(cfg_path))        # D-a: the summary header records the effective values
+    cfg = data_centers_setting(cfg)      # D111: refuse a bad data_centers value before any work
+    if cfg.get("dc_deferral"):
+        print(f"WARNING: {DEMO_ONLY}", flush=True)
     nomination_span(cfg)          # refuse a bad nomination_span before any work
     n_warm = warmup_days(cfg)     # and a bad or refused warmup_days
     controllable = peak_steps(cfg) == "controllable"     # and a bad peak_steps (D57)
@@ -1441,9 +1679,11 @@ def main(cfg_path):
     m2a = any(fl[k] for k in M2A_FLAGS)
     v2 = m2a or bool(cfg.get("harm_components", False))
     prev = previous_day(cfg) if fl["daily_energy"] else None
+    dc_spec = dc_spec_from_config(cfg, s, part, n_warm, ablation_flag)     # M2b (None unless dc_deferral: true)
     print(f"{len(part)} agents, {len(s.ts_utc)} steps" + (f" after {n_warm} warm-up day(s)" if n_warm else "")
           + "; selfish ...", flush=True)
-    selfish_run = view(run_variant(cfg, s_run, part, out_dir, prev=prev, window_start_utc=start_utc))
+    selfish_run = view(run_variant(cfg, s_run, part, out_dir, prev=prev, window_start_utc=start_utc,
+                                   **({"dc_spec": dc_spec} if dc_spec else {})))
     selfish = evaluate(cfg, s, part, selfish_run, rec_net, m0, selfish_run if v2 else None)
     print(f"  selfish peak {selfish['peak_mw']:.1f} MW ({selfish['runtime_s']} s)", flush=True)
     if pf:
@@ -1454,7 +1694,7 @@ def main(cfg_path):
     def exchange_run(h, rnds, off=(), suffix=""):
         print(f"exchange, headroom {h} MW" + (f", {rnds} rounds" if nominations else "") + suffix + " ...", flush=True)
         r = view(run_variant(cfg, s_run, part, out_dir, h, rnds, off=off, prev=prev, suffix=suffix,
-                             window_start_utc=start_utc))
+                             window_start_utc=start_utc, **({"dc_spec": dc_spec} if dc_spec else {})))
         ev = evaluate(cfg, s, part, r, rec_net, m0, selfish_run if r["v2"] else None)
         ev["pass"] = bool(ev["peak_mw"] < selfish["peak_mw"] - 1e-3)
         ev["pass_peak_inside_windows"] = bool(ev["pass"] and not ev["rebound"]["peak_moved_outside_windows"])
@@ -1466,6 +1706,14 @@ def main(cfg_path):
             cut = selfish["peak_mw"] - ev["peak_mw"]
             ev["price_mode"]["payout_per_mw_cut_usd"] = (ev["price_mode"]["operator_net_payout_usd"] / cut
                                                          if cut > 1e-6 else None)
+        if dc_spec:           # M2b: deferral rules per data center (selfish and exchange), data centers' share of relief
+            ev["dc_deferral"] = {"exchange": dc_block(r, dc_spec, r["header"]["roster"], s.dt_h),
+                                 "acting_alone": dc_block(selfish_run, dc_spec, selfish_run["header"]["roster"], s.dt_h),
+                                 "share_of_relief": dc_relief_share(selfish["_net"], ev["_net"], selfish_run["load_eff"],
+                                                                    r["load_eff"], [j for j, i in enumerate(part)
+                                                                                    if str(s.ids[i]) in dc_spec["generated"]],
+                                                                    pf),
+                                 "declared_tighter": sorted((dc_spec.get("declared") or {}).keys())}
         ev["_daily_clipping"] = r["daily_clipping"]
         if "llm" in r:          # M4: calls, tokens, $ per simulated day, labels (only with llm_strategy)
             ev["llm"] = r["llm"]
@@ -1479,7 +1727,9 @@ def main(cfg_path):
                 alone = alone - selfish_run["SOC_start"] * p_end
                 with_ps = with_ps - r["SOC_start"] * p_end
         ev["net_harm"] = net_harm(alone, with_ps, [ag.id for ag in r["agents"]], r["header"]["roster"],
-                                  len(s.ids) - len(part), unrounded=bool(cfg.get("harm_unrounded", False)))
+                                  len(s.ids) - len(part), unrounded=bool(cfg.get("harm_unrounded", False)),
+                                  excluded={a_: s_ for a_, s_ in r["roster_status"].items() if s_ != "active"})
+        ev["_roster_status"] = (r["roster_status"], r["roster_excluded_reason"])      # D101, for the summary header
         # D61 (M3 step 7): each agent's value with Pearl Street, the same as net_harm's, for the twin comparison
         ev["agent_value_usd"] = {ag.id: float(v) for ag, v in zip(r["agents"], with_ps)}
         if r["v2"]:
@@ -1518,8 +1768,12 @@ def main(cfg_path):
                                            "total_net_harm_usd": ev["net_harm"]["total_net_harm_usd"]}
 
     strip = lambda d: {k: v for k, v in d.items() if not k.startswith("_")}
+    rs = [v["_roster_status"] for v in exch.values()]
+    if any(x != rs[0] for x in rs):       # registration happens before any headroom matters; fail closed if not
+        raise RuntimeError(f"D101: roster_status differs between headrooms: {rs}")
     summary = {
-        "header": summary_header(cfg, [str(s.ids[i]) for i in part], selfish_run["header"]),
+        "header": {**summary_header(cfg, [str(s.ids[i]) for i in part], selfish_run["header"]),
+                   "roster_status": rs[0][0], **({"roster_excluded_reason": rs[0][1]} if rs[0][1] else {})},
         "slice": {"start_utc": clock.iso[0], "end_utc": clock.end_iso(len(clock.iso) - 1), "steps": len(clock.iso)},
         "agents": len(part),
         "m0": None if m0 is None else {"recorded_peak_mw": m0["baseline_recorded"]["peak_mw"],
@@ -1529,6 +1783,8 @@ def main(cfg_path):
         "exchange_by_headroom_mw": {h: strip(v) for h, v in exch.items()},
         "pass_all_headrooms": all(v["pass"] for v in exch.values()),
     }
+    if cfg.get("dc_deferral"):            # D111: the label leads the summary
+        summary = {"demo_only": DEMO_ONLY, **summary}
     if pf:
         summary["peak_steps"] = {"rule": "controllable (D57 option 1): headline peak, share of the M0 ceiling and gap "
                                          "share over steps from the first binding call's window on; the full-slice "

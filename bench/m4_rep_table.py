@@ -14,6 +14,7 @@ import ast
 import json
 import sys
 from pathlib import Path
+from bench import roster_cover as RC
 
 
 class CheckFailed(Exception):
@@ -23,6 +24,7 @@ class CheckFailed(Exception):
 def _load(d) -> dict:
     d = Path(d)
     s = json.loads((d / "summary.json").read_text(encoding="utf-8"))
+    RC.guard(s.get("header"), "bench.m4_rep_table")     # D101: not built for exclusions
     head = s.get("header") or {}
     roster = list(head.get("roster") or [])
     if not roster:

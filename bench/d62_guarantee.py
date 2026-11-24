@@ -116,6 +116,7 @@ def load_run(run: str) -> dict:
     from sim.data import load_config, load_slice
     R = REPO / "runs" / run
     summ = json.loads((R / "summary.json").read_text())
+    D.RC.require_all_active(summ["header"], "bench.d62_guarantee")     # D101: not built for exclusions
     hs = list(summ["exchange_by_headroom_mw"])
     if len(hs) != 1:
         raise CheckFailed(f"{run}: expected one headroom, got {hs}")

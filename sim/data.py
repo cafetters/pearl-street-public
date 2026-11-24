@@ -134,6 +134,48 @@ def load_flex(data_dir: str | Path, start, end, tz: str = "America/Chicago") -> 
     return ids, {k: np.nan_to_num(df[c].to_numpy(np.float64)).reshape(len(ids), T) for k, c in FLEX_COLS.items()}
 
 
+DC_SESSIONS_FILE = "dc_sessions_2023.parquet"
+
+
+def load_dc_room(data_dir: str | Path, start, end, tz: str = "America/Chicago"):
+    """M2b (Nov 19): each data center's room for served work per step, the site's capacity minus the load it is not
+    postponing: max(dc_capacity_kw - (load_kw - dc_flexible_kw), 0). Returns (ids (sorted, the data centers in the
+    session table), room (N, T) kW)."""
+    t0, t1 = local_range(start, end, tz)
+    T = len(pd.date_range(t0, t1, freq=STEP, inclusive="left"))
+    df = _read_range(Path(data_dir) / TS_FILE, ["timestamp", "entity_id", "load_kw", "dc_flexible_kw", "dc_capacity_kw"],
+                     t0, t1)
+    ids = np.array(sorted(pd.read_parquet(Path(data_dir) / DC_SESSIONS_FILE, columns=["entity_id"]).entity_id.unique()))
+    df = df[df.entity_id.isin(ids)].sort_values(["entity_id", "timestamp"])
+    if len(df) != len(ids) * T:
+        raise ValueError(f"dc room: {len(df)} rows for {len(ids)} data centers x {T} steps")
+    f = lambda c: np.nan_to_num(df[c].to_numpy(np.float64)).reshape(len(ids), T)      # noqa: E731
+    return ids, np.maximum(f("dc_capacity_kw") - (f("load_kw") - f("dc_flexible_kw")), 0.0)
+
+
+def load_dc(data_dir: str | Path, start, end, tz: str = "America/Chicago"):
+    """M2b: the data centers' flexible workload and daily sessions on a slice's steps.
+    Returns (ids (sorted), generated (N, T) kW from dc_flexible_kw, {id: [sim.dc_defer.Session]}). A session's start
+    and deadline are steps relative to the slice (deadline may pass the slice's end; dc_defer clips it); its energy
+    and power ceiling come from the session table. Sessions that start outside the slice are left out."""
+    from sim.dc_defer import Session
+    t0, t1 = local_range(start, end, tz)
+    ts = pd.date_range(t0, t1, freq=STEP, inclusive="left")
+    ids_all, flex = load_flex(data_dir, start, end, tz)
+    sess = pd.read_parquet(Path(data_dir) / DC_SESSIONS_FILE)
+    ids = np.array(sorted(sess.entity_id.unique()))
+    pos = {a: i for i, a in enumerate(ids_all)}
+    g = np.stack([flex["dc_flex"][pos[a]] for a in ids])
+    out = {}
+    step = pd.Timedelta(STEP)
+    for a in ids:
+        rows = sess[(sess.entity_id == a) & (sess.arrival_time >= ts[0]) & (sess.arrival_time < ts[-1] + step)]
+        out[a] = [Session(start=int((r.arrival_time - ts[0]) / step), deadline=int((r.departure_time - ts[0]) / step),
+                          energy_kwh=float(r.required_energy_kwh), cap_kw=float(r.charge_power_kw_max))
+                  for r in rows.sort_values("arrival_time").itertuples()]
+    return ids, g, out
+
+
 def to_hourly(s: Slice) -> Slice:
     """Hourly means of powers and prices. soc takes the first step of each hour."""
     n, T = s.shape

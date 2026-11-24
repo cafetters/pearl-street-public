@@ -23,6 +23,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from bench import roster_cover as RC
 
 SPLIT_TOL_USD = 0.01
 
@@ -47,6 +48,7 @@ def load(run_dir) -> dict:
          "op": [], "agg": {}, "pp": {}, "pp_final": {}, "noms": defaultdict(list), "sref": {}, "records": {}}
     with open(_trace_path(run_dir), encoding="utf-8") as f:
         r["header"] = json.loads(next(f))
+        RC.guard(r["header"], "bench.silent_diag", run_dir)     # D101: not built for exclusions
         for line in f:
             m = json.loads(line)
             typ = m.get("msg_type")
